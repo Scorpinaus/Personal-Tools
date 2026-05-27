@@ -31,28 +31,46 @@
         <div id="rollingTokens"></div>
       </section>
     </div>
-    <section>
-      <h2>Rate-Limit History</h2>
-      <div id="rateLimitHistory"></div>
+    <section class="collapsible-section">
+      <details data-collapse-key="rateLimitHistory" open>
+        <summary class="section-summary">
+          <h2>Rate-Limit History</h2>
+        </summary>
+        <div class="section-body">
+          <div id="rateLimitHistory"></div>
+        </div>
+      </details>
     </section>
-    <section>
-      <h2>Estimated Token Cost By Model</h2>
-      <p class="source" id="costAssumptions">Cost basis: loading</p>
-      <div class="tabs" role="tablist">
-        <button class="tab active" type="button" data-tab-scope="costs" data-tab="modelCosts">By model</button>
-        <button class="tab" type="button" data-tab-scope="costs" data-tab="sourceCosts">By source estimate</button>
-      </div>
-      <div id="modelCosts" class="tab-panel" data-tab-scope="costs"></div>
-      <div id="sourceCosts" class="tab-panel" data-tab-scope="costs" hidden></div>
-      <p class="source">
-        Pricing source is shown above for the selected cost basis. Reasoning tokens are shown separately and not double-counted.
-        Source costs are local estimates allocated from the model/period totals.
-      </p>
+    <section class="collapsible-section">
+      <details data-collapse-key="modelCostsSection" open>
+        <summary class="section-summary">
+          <h2>Estimated Token Cost By Model</h2>
+        </summary>
+        <div class="section-body">
+          <p class="source" id="costAssumptions">Cost basis: loading</p>
+          <div class="tabs" role="tablist">
+            <button class="tab active" type="button" data-tab-scope="costs" data-tab="modelCosts">By model</button>
+            <button class="tab" type="button" data-tab-scope="costs" data-tab="sourceCosts">By source estimate</button>
+          </div>
+          <div id="modelCosts" class="tab-panel" data-tab-scope="costs"></div>
+          <div id="sourceCosts" class="tab-panel" data-tab-scope="costs" hidden></div>
+          <p class="source">
+            Pricing source is shown above for the selected cost basis. Reasoning tokens are shown separately and not double-counted.
+            Source costs are local estimates allocated from the model/period totals.
+          </p>
+        </div>
+      </details>
     </section>
-    <section>
-      <h2>Conversation Token Usage</h2>
-      <div id="conversationTokens"></div>
-      <p class="source" id="source"></p>
+    <section class="collapsible-section">
+      <details data-collapse-key="conversationTokens" open>
+        <summary class="section-summary">
+          <h2>Conversation Token Usage</h2>
+        </summary>
+        <div class="section-body">
+          <div id="conversationTokens"></div>
+          <p class="source" id="source"></p>
+        </div>
+      </details>
     </section>
   </main>
   <script src="/app.js"></script>

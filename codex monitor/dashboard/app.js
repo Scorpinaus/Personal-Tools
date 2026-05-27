@@ -4,6 +4,7 @@
     const number = new Intl.NumberFormat();
     const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
     const activeTabs = { costs: "modelCosts", rateHistory: "historyFiveHour" };
+    const collapseStoragePrefix = "codexUsageDashboard.section.";
     const stopMonitorButton = document.getElementById("stopMonitor");
     let stopped = false;
     let refreshTimer = null;
@@ -435,6 +436,32 @@
       });
     }
 
+    function initializeCollapsibleSections() {
+      document.querySelectorAll("details[data-collapse-key]").forEach((details) => {
+        const storageKey = collapseStoragePrefix + details.dataset.collapseKey;
+        try {
+          const storedState = localStorage.getItem(storageKey);
+          if (storedState === "closed") {
+            details.open = false;
+          }
+          else if (storedState === "open") {
+            details.open = true;
+          }
+        }
+        catch {
+          // Browsers can disable localStorage; the native details state still works.
+        }
+
+        details.addEventListener("toggle", () => {
+          try {
+            localStorage.setItem(storageKey, details.open ? "open" : "closed");
+          }
+          catch {
+          }
+        });
+      });
+    }
+
     function showStatusMessage(message, kind) {
       const error = document.getElementById("error");
       error.textContent = message;
@@ -515,5 +542,6 @@
       }
     }
 
+    initializeCollapsibleSections();
     load();
     refreshTimer = setInterval(load, refreshMs);
