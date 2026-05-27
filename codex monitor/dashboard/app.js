@@ -1,4 +1,4 @@
-    const refreshMs = 60000;
+    const refreshMs = 30000;
     document.getElementById("refresh").textContent = `Refresh: ${refreshMs / 1000}s`;
 
     const number = new Intl.NumberFormat();
