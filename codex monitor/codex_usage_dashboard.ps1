@@ -144,19 +144,80 @@ function Convert-SnapshotForJson {
         return [long]$sum
     }
 
+    function Get-LongPropertyValue {
+        param(
+            [object]$Row,
+            [string]$Property
+        )
+
+        if ($null -eq $Row) {
+            return 0L
+        }
+
+        $prop = $Row.PSObject.Properties[$Property]
+        if ($null -eq $prop -or $null -eq $prop.Value -or [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+            return 0L
+        }
+
+        try {
+            return [long]$prop.Value
+        }
+        catch {
+            return 0L
+        }
+    }
+
+    function Copy-RowWithInputBreakdown {
+        param(
+            [object[]]$Rows,
+            [string]$InputProperty = "Input",
+            [string]$CachedInputProperty = "CachedInput",
+            [string]$NonCachedInputProperty = "NonCachedInput"
+        )
+
+        @(
+            foreach ($row in @($Rows)) {
+                if ($null -eq $row) {
+                    continue
+                }
+
+                $copy = [ordered]@{}
+                foreach ($prop in $row.PSObject.Properties) {
+                    if ($prop.Name -eq $NonCachedInputProperty) {
+                        continue
+                    }
+
+                    $copy[$prop.Name] = $prop.Value
+                    if ($prop.Name -eq $CachedInputProperty -and -not $copy.Contains($NonCachedInputProperty)) {
+                        $copy[$NonCachedInputProperty] = [Math]::Max(0L, (Get-LongPropertyValue $row $InputProperty) - (Get-LongPropertyValue $row $CachedInputProperty))
+                    }
+                }
+
+                if (-not $copy.Contains($NonCachedInputProperty)) {
+                    $copy[$NonCachedInputProperty] = [Math]::Max(0L, (Get-LongPropertyValue $row $InputProperty) - (Get-LongPropertyValue $row $CachedInputProperty))
+                }
+
+                [pscustomobject]$copy
+            }
+        )
+    }
+
     $periodCostTotals = @()
     foreach ($periodWindow in $Snapshot.ModelTokenPeriodWindows) {
         $rows = @($Snapshot.ModelTokenPeriodRows | Where-Object { $_.PeriodGroup -eq $periodWindow.Group -and $_.PeriodName -eq $periodWindow.Name })
         $totalUsd = Get-TotalEstimatedCostUsd $rows
         $totalCredits = Get-TotalEstimatedCostCredits $rows
+        $totalInput = Get-SumProperty $rows "Input"
+        $totalCachedInput = Get-SumProperty $rows "CachedInput"
         $periodCostTotals += [pscustomobject]@{
             PeriodGroup = $periodWindow.Group
             PeriodName = $periodWindow.Name
             PeriodLabel = $periodWindow.Label
             PeriodSortOrder = $periodWindow.SortOrder
             Total = Get-SumProperty $rows "Total"
-            Input = Get-SumProperty $rows "Input"
-            CachedInput = Get-SumProperty $rows "CachedInput"
+            Input = $totalInput
+            CachedInput = $totalCachedInput
+            NonCachedInput = [Math]::Max(0L, $totalInput - $totalCachedInput)
             Output = Get-SumProperty $rows "Output"
             Reasoning = Get-SumProperty $rows "Reasoning"
             Events = Get-SumProperty $rows "Events"
@@ -242,14 +303,14 @@ function Convert-SnapshotForJson {
         RateLimitHistorySummaryRows = $rateLimitHistorySummaryRows
         RateLimitHistoryDays = if ($Snapshot.PSObject.Properties["RateLimitHistoryDays"]) { $Snapshot.RateLimitHistoryDays } else { $RateLimitHistoryDays }
         RateLimitHistorySampleSeconds = if ($Snapshot.PSObject.Properties["RateLimitHistorySampleSeconds"]) { $Snapshot.RateLimitHistorySampleSeconds } else { $RateLimitHistorySampleSeconds }
-        RollingTokenRows = $Snapshot.RollingTokenRows
-        ModelTokenRows = $Snapshot.ModelTokenRows
-        ModelTokenPeriodRows = $Snapshot.ModelTokenPeriodRows
+        RollingTokenRows = Copy-RowWithInputBreakdown @($Snapshot.RollingTokenRows)
+        ModelTokenRows = Copy-RowWithInputBreakdown @($Snapshot.ModelTokenRows)
+        ModelTokenPeriodRows = Copy-RowWithInputBreakdown @($Snapshot.ModelTokenPeriodRows)
         ModelTokenPeriodWindows = $Snapshot.ModelTokenPeriodWindows
-        SourceCostRows = $Snapshot.SourceCostRows
+        SourceCostRows = Copy-RowWithInputBreakdown @($Snapshot.SourceCostRows) "AllocatedInput" "AllocatedCachedInput" "AllocatedNonCachedInput"
         ModelCostTotals = $costTotals
         ModelPeriodCostTotals = @($periodCostTotals | Sort-Object PeriodGroup, PeriodSortOrder)
-        TokenRows = $Snapshot.TokenRows
+        TokenRows = Copy-RowWithInputBreakdown @($Snapshot.TokenRows)
         ContextWindow = $Snapshot.ContextWindow
         UsdToSgdRate = $UsdToSgdRate
     }

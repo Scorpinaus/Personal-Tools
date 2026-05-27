@@ -4,7 +4,6 @@
     const number = new Intl.NumberFormat();
     const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
     const activeTabs = { costs: "modelCosts", rateHistory: "historyFiveHour" };
-    const collapseStoragePrefix = "codexUsageDashboard.section.";
     const stopMonitorButton = document.getElementById("stopMonitor");
     let stopped = false;
     let refreshTimer = null;
@@ -323,8 +322,9 @@
       return table(sorted, [
         { key: "PeriodLabel", label: "Period" },
         { key: "Total", label: "Total", number: true },
-        { key: "Input", label: "Input", number: true },
+        { key: "Input", label: "Total input", number: true },
         { key: "CachedInput", label: "Cached input", number: true },
+        { key: "NonCachedInput", label: "Non-cached input", number: true },
         { key: "Output", label: "Output", number: true },
         { key: "Reasoning", label: "Reasoning", number: true },
         { key: "Events", label: "Events", number: true },
@@ -350,8 +350,9 @@
             { key: "CostUnit", label: "Unit" },
             { key: "BillingConfidence", label: "Confidence" },
             { key: "Total", label: "Total", number: true },
-            { key: "Input", label: "Input", number: true },
+            { key: "Input", label: "Total input", number: true },
             { key: "CachedInput", label: "Cached input", number: true },
+            { key: "NonCachedInput", label: "Non-cached input", number: true },
             { key: "Output", label: "Output", number: true },
             { key: "Reasoning", label: "Reasoning", number: true },
             { key: "Events", label: "Events", number: true },
@@ -372,8 +373,9 @@
             { key: "CostUnit", label: "Unit" },
             { key: "BillingConfidence", label: "Confidence" },
             { key: "Total", label: "Total", number: true },
-            { key: "Input", label: "Input", number: true },
+            { key: "Input", label: "Total input", number: true },
             { key: "CachedInput", label: "Cached input", number: true },
+            { key: "NonCachedInput", label: "Non-cached input", number: true },
             { key: "Output", label: "Output", number: true },
             { key: "Reasoning", label: "Reasoning", number: true },
             { key: "Events", label: "Events", number: true },
@@ -403,10 +405,11 @@
             { key: "BillingConfidence", label: "Confidence" },
             { key: "EstimatedChars", label: "Est. chars", number: true },
             { key: "EstimatedTokens", label: "Est. tokens", number: true },
-            { key: "EstimatedInputTokens", label: "Est. input", number: true },
+            { key: "EstimatedInputTokens", label: "Est. total input", number: true },
             { key: "EstimatedOutputTokens", label: "Est. output", number: true },
-            { key: "AllocatedInput", label: "Alloc. input", number: true },
-            { key: "AllocatedCachedInput", label: "Cached input", number: true },
+            { key: "AllocatedInput", label: "Alloc. total input", number: true },
+            { key: "AllocatedCachedInput", label: "Alloc. cached input", number: true },
+            { key: "AllocatedNonCachedInput", label: "Alloc. non-cached input", number: true },
             { key: "AllocatedOutput", label: "Alloc. output", number: true },
             { key: "AllocatedTokens", label: "Alloc. tokens", number: true },
             { key: "ReconciliationDelta", label: "Recon delta", number: true },
@@ -438,27 +441,7 @@
 
     function initializeCollapsibleSections() {
       document.querySelectorAll("details[data-collapse-key]").forEach((details) => {
-        const storageKey = collapseStoragePrefix + details.dataset.collapseKey;
-        try {
-          const storedState = localStorage.getItem(storageKey);
-          if (storedState === "closed") {
-            details.open = false;
-          }
-          else if (storedState === "open") {
-            details.open = true;
-          }
-        }
-        catch {
-          // Browsers can disable localStorage; the native details state still works.
-        }
-
-        details.addEventListener("toggle", () => {
-          try {
-            localStorage.setItem(storageKey, details.open ? "open" : "closed");
-          }
-          catch {
-          }
-        });
+        details.open = false;
       });
     }
 
@@ -519,8 +502,9 @@
         document.getElementById("rollingTokens").innerHTML = table(data.RollingTokenRows, [
           { key: "Window", label: "Window" },
           { key: "Total", label: "Total", number: true },
-          { key: "Input", label: "Input", number: true },
+          { key: "Input", label: "Total input", number: true },
           { key: "CachedInput", label: "Cached input", number: true },
+          { key: "NonCachedInput", label: "Non-cached input", number: true },
           { key: "Output", label: "Output", number: true },
           { key: "Reasoning", label: "Reasoning", number: true },
           { key: "Events", label: "Events", number: true }
@@ -531,8 +515,9 @@
         document.getElementById("conversationTokens").innerHTML = table(data.TokenRows, [
           { key: "Scope", label: "Scope" },
           { key: "Total", label: "Total", number: true },
-          { key: "Input", label: "Input", number: true },
+          { key: "Input", label: "Total input", number: true },
           { key: "CachedInput", label: "Cached input", number: true },
+          { key: "NonCachedInput", label: "Non-cached input", number: true },
           { key: "Output", label: "Output", number: true },
           { key: "Reasoning", label: "Reasoning", number: true }
         ]);
