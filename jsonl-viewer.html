@@ -95,7 +95,7 @@
     .app {
       min-height: 100vh;
       display: grid;
-      grid-template-rows: auto auto auto 1fr;
+      grid-template-rows: auto auto auto auto auto 1fr;
     }
 
     .topbar {
@@ -154,14 +154,89 @@
       background: #fbfcfd;
     }
 
-    .analysisbar {
+    .filterzone {
       display: grid;
-      grid-template-columns: auto auto auto minmax(260px, 1fr);
+      grid-template-columns: minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .typebar {
+      justify-self: end;
+      display: inline-grid;
+      grid-template-columns: minmax(170px, auto) minmax(190px, auto) auto;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .columnbar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
       gap: 10px;
       align-items: start;
       padding: 10px 18px;
       border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .filebar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .file-actions {
+      display: inline-flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .file-chips {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .file-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 360px;
+      min-height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
       background: var(--panel);
+      color: var(--muted);
+      padding: 0 10px;
+      font-size: 12px;
+      overflow: hidden;
+    }
+
+    .file-chip.active {
+      border-color: rgba(27, 109, 132, 0.55);
+      background: #e6f3f5;
+      color: var(--accent-strong);
+    }
+
+    .file-chip-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    .file-chip-count {
+      color: var(--muted);
+      white-space: nowrap;
     }
 
     .control-group {
@@ -174,6 +249,15 @@
     .control-label {
       color: var(--muted);
       font-size: 12px;
+    }
+
+    .control-group.grow {
+      min-width: 0;
+    }
+
+    .control-group.grow select {
+      width: 100%;
+      min-width: 0;
     }
 
     .columns {
@@ -599,7 +683,20 @@
         grid-template-columns: 1fr;
       }
 
-      .analysisbar {
+      .filterzone {
+        grid-template-columns: 1fr;
+      }
+
+      .typebar {
+        grid-template-columns: 1fr;
+        justify-self: stretch;
+      }
+
+      .columnbar {
+        grid-template-columns: 1fr;
+      }
+
+      .filebar {
         grid-template-columns: 1fr;
       }
 
@@ -631,8 +728,10 @@
         </div>
       </div>
       <div>
-        <input id="fileInput" class="hidden" type="file" accept=".jsonl,.json,.log,.txt,application/json,text/plain">
-        <button id="openButton" class="primary" type="button">Open File</button>
+        <input id="fileInput" class="hidden" type="file" multiple accept=".jsonl,.json,.log,.txt,application/json,text/plain">
+        <input id="folderInput" class="hidden" type="file" multiple webkitdirectory>
+        <button id="openButton" class="primary" type="button">Open Files</button>
+        <button id="folderButton" type="button">Open Folder</button>
       </div>
     </header>
 
@@ -659,24 +758,36 @@
       </div>
     </section>
 
-    <section class="analysisbar" aria-label="Analysis controls">
-      <label class="control-group">
-        <span class="control-label">Search in</span>
-        <select id="fieldFilter" aria-label="Search field">
-          <option value="">All fields</option>
-        </select>
-      </label>
-      <label class="control-group">
-        <span class="control-label">Sort by</span>
-        <select id="sortField" aria-label="Sort field">
-          <option value="__line">Line number</option>
-        </select>
-      </label>
-      <button id="sortDir" type="button" title="Toggle sort direction">Ascending</button>
-      <div class="columns">
-        <span class="control-label">Columns</span>
-        <div id="columnChips" class="columns"></div>
+    <section class="filterzone" aria-label="Filters and sorting">
+      <div class="typebar" aria-label="Type filters and sort direction">
+        <label class="control-group grow">
+          <span class="control-label">Type</span>
+          <select id="typeFilter" aria-label="Type filter">
+            <option value="">All types</option>
+          </select>
+        </label>
+        <label class="control-group grow">
+          <span class="control-label">Payload type</span>
+          <select id="payloadTypeFilter" aria-label="Payload type filter">
+            <option value="">All payload types</option>
+          </select>
+        </label>
+        <button id="sortDir" type="button" title="Toggle sort direction">Ascending</button>
       </div>
+    </section>
+
+    <section class="columnbar" aria-label="Table columns">
+      <span class="control-label">Table columns</span>
+      <div id="columnChips" class="columns"></div>
+    </section>
+
+    <section class="filebar" aria-label="Loaded files">
+      <div class="file-actions">
+        <button id="enableAllFiles" type="button">All Files</button>
+        <button id="disableAllFiles" type="button">No Files</button>
+        <button id="clearFiles" type="button">Clear</button>
+      </div>
+      <div id="fileChips" class="file-chips"></div>
     </section>
 
     <section class="workspace">
@@ -723,10 +834,13 @@
   <script>
     const state = {
       fileName: "",
+      files: [],
+      nextFileId: 1,
       records: [],
       errors: [],
       allFields: [],
-      fields: [],
+      topLevelFields: [],
+      tableFields: [],
       filteredRecords: [],
       filteredErrors: [],
       selectedRecord: null,
@@ -734,7 +848,10 @@
       view: "table",
       detailView: "readable",
       query: "",
-      fieldFilter: "",
+      typeFilter: "",
+      payloadTypeFilter: "",
+      typeOptions: [],
+      payloadTypeOptions: [],
       sortField: "__line",
       sortDir: "asc",
       page: 1,
@@ -743,15 +860,21 @@
 
     const els = {
       fileInput: document.getElementById("fileInput"),
+      folderInput: document.getElementById("folderInput"),
       openButton: document.getElementById("openButton"),
+      folderButton: document.getElementById("folderButton"),
       fileName: document.getElementById("fileName"),
       searchInput: document.getElementById("searchInput"),
       pageSize: document.getElementById("pageSize"),
-      fieldFilter: document.getElementById("fieldFilter"),
-      sortField: document.getElementById("sortField"),
+      typeFilter: document.getElementById("typeFilter"),
+      payloadTypeFilter: document.getElementById("payloadTypeFilter"),
       sortDir: document.getElementById("sortDir"),
       exportButton: document.getElementById("exportButton"),
       columnChips: document.getElementById("columnChips"),
+      fileChips: document.getElementById("fileChips"),
+      enableAllFiles: document.getElementById("enableAllFiles"),
+      disableAllFiles: document.getElementById("disableAllFiles"),
+      clearFiles: document.getElementById("clearFiles"),
       totalRows: document.getElementById("totalRows"),
       validRows: document.getElementById("validRows"),
       invalidRows: document.getElementById("invalidRows"),
@@ -769,7 +892,9 @@
     };
 
     els.openButton.addEventListener("click", () => els.fileInput.click());
+    els.folderButton.addEventListener("click", () => els.folderInput.click());
     els.fileInput.addEventListener("change", handleFile);
+    els.folderInput.addEventListener("change", handleFile);
     els.searchInput.addEventListener("input", () => {
       state.query = els.searchInput.value.trim().toLowerCase();
       state.page = 1;
@@ -781,14 +906,16 @@
       state.page = 1;
       render();
     });
-    els.fieldFilter.addEventListener("change", () => {
-      state.fieldFilter = els.fieldFilter.value;
+    els.typeFilter.addEventListener("change", () => {
+      state.typeFilter = els.typeFilter.value;
+      state.payloadTypeFilter = "";
       state.page = 1;
+      renderFieldControls();
       applyFilters();
       render();
     });
-    els.sortField.addEventListener("change", () => {
-      state.sortField = els.sortField.value;
+    els.payloadTypeFilter.addEventListener("change", () => {
+      state.payloadTypeFilter = els.payloadTypeFilter.value;
       state.page = 1;
       applyFilters();
       render();
@@ -810,6 +937,9 @@
     els.copyButton.addEventListener("click", copySelected);
     els.exportButton.addEventListener("click", exportFiltered);
     els.resizeHandle.addEventListener("pointerdown", startResize);
+    els.enableAllFiles.addEventListener("click", () => setAllFilesEnabled(true));
+    els.disableAllFiles.addEventListener("click", () => setAllFilesEnabled(false));
+    els.clearFiles.addEventListener("click", clearFiles);
     window.addEventListener("dragover", (event) => {
       event.preventDefault();
       document.body.classList.add("dragging");
@@ -820,8 +950,7 @@
     window.addEventListener("drop", (event) => {
       event.preventDefault();
       document.body.classList.remove("dragging");
-      const file = event.dataTransfer.files[0];
-      if (file) loadFile(file);
+      loadFiles(Array.from(event.dataTransfer.files));
     });
     document.querySelectorAll(".tab").forEach((button) => {
       if (button.dataset.detailView) return;
@@ -841,129 +970,229 @@
     });
 
     async function handleFile(event) {
-      const file = event.target.files[0];
-      if (!file) return;
-      loadFile(file);
+      const files = Array.from(event.target.files);
+      if (!files.length) return;
+      await loadFiles(files);
+      event.target.value = "";
     }
 
-    async function loadFile(file) {
-      resetForFile(file.name);
-      els.tableWrap.innerHTML = '<div class="empty">Reading file...</div>';
-      const text = await file.text();
-      parseJsonl(text);
+    async function loadFiles(files) {
+      const jsonlFiles = files.filter(isReadableJsonlFile);
+      resetForFiles(jsonlFiles);
+      if (!jsonlFiles.length) {
+        els.tableWrap.innerHTML = '<div class="empty">No JSONL, JSON, log, or text files found.</div>';
+        render();
+        return;
+      }
+
+      const fieldCounts = new Map();
+      const topLevelFieldCounts = new Map();
+      for (const [index, file] of jsonlFiles.entries()) {
+        els.fileName.textContent = `Reading ${index + 1} / ${jsonlFiles.length}: ${file.webkitRelativePath || file.name}`;
+        const fileMeta = createFileMeta(file);
+        state.files.push(fileMeta);
+        const text = await file.text();
+        parseJsonl(text, fileMeta, fieldCounts, topLevelFieldCounts);
+      }
+
+      state.allFields = Array.from(fieldCounts.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([key]) => key);
+      state.topLevelFields = Array.from(topLevelFieldCounts.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([key]) => key);
+      state.typeOptions = buildTypeOptions();
+      state.payloadTypeOptions = [];
+      state.tableFields = ["_file", "_path", ...state.topLevelFields.slice(0, 10), "_raw"];
+      state.selectedRecord = state.records[0] || state.errors[0] || null;
+      state.selectedKind = state.records[0] ? "record" : "error";
+      updateLoadedFileLabel();
+      renderFileChips();
       renderFieldControls();
       applyFilters();
       render();
     }
 
-    function resetForFile(fileName) {
-      state.fileName = fileName;
+    function resetForFiles(files) {
+      state.fileName = files.length === 1 ? files[0].name : `${files.length} files`;
+      state.files = [];
+      state.nextFileId = 1;
       state.records = [];
       state.errors = [];
       state.allFields = [];
-      state.fields = [];
+      state.topLevelFields = [];
+      state.tableFields = [];
       state.filteredRecords = [];
       state.filteredErrors = [];
       state.selectedRecord = null;
       state.selectedKind = "record";
-      state.fieldFilter = "";
+      state.typeFilter = "";
+      state.payloadTypeFilter = "";
+      state.typeOptions = [];
+      state.payloadTypeOptions = [];
       state.sortField = "__line";
       state.sortDir = "asc";
       state.page = 1;
-      els.fileName.textContent = fileName;
-      els.fieldFilter.value = "";
-      els.sortField.value = "__line";
+      els.fileName.textContent = state.fileName || "No files selected";
+      els.typeFilter.value = "";
+      els.payloadTypeFilter.value = "";
     }
 
-    function parseJsonl(text) {
+    function createFileMeta(file) {
+      return {
+        id: state.nextFileId++,
+        name: file.name,
+        path: file.webkitRelativePath || file.name,
+        enabled: true,
+        valid: 0,
+        invalid: 0,
+        lines: 0
+      };
+    }
+
+    function isReadableJsonlFile(file) {
+      return /\.(jsonl|json|log|txt|ndjson)$/i.test(file.name) || file.type === "application/json" || file.type === "text/plain" || !file.type;
+    }
+
+    function parseJsonl(text, fileMeta, fieldCounts, topLevelFieldCounts) {
       const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
-      const fieldCounts = new Map();
       lines.forEach((line, index) => {
         const lineNumber = index + 1;
         if (!line.trim()) return;
+        fileMeta.lines += 1;
         try {
           const value = JSON.parse(line);
+          const flatFields = flattenRecordFields(value);
           const record = {
+            id: `record:${fileMeta.id}:${lineNumber}`,
+            fileId: fileMeta.id,
+            fileName: fileMeta.name,
+            filePath: fileMeta.path,
             lineNumber,
             value,
-            searchText: JSON.stringify(value).toLowerCase()
+            flatFields,
+            searchText: `${fileMeta.name} ${fileMeta.path} ${JSON.stringify(value)}`.toLowerCase()
           };
           state.records.push(record);
-          if (value && typeof value === "object" && !Array.isArray(value)) {
-            Object.keys(value).forEach((key) => fieldCounts.set(key, (fieldCounts.get(key) || 0) + 1));
-          }
+          fileMeta.valid += 1;
+          Object.keys(flatFields).forEach((key) => fieldCounts.set(key, (fieldCounts.get(key) || 0) + 1));
+          getTopLevelFieldNames(value).forEach((key) => topLevelFieldCounts.set(key, (topLevelFieldCounts.get(key) || 0) + 1));
         } catch (error) {
           state.errors.push({
+            id: `error:${fileMeta.id}:${lineNumber}`,
+            fileId: fileMeta.id,
+            fileName: fileMeta.name,
+            filePath: fileMeta.path,
             lineNumber,
             raw: line,
             message: error.message,
-            searchText: `${line} ${error.message}`.toLowerCase()
+            searchText: `${fileMeta.name} ${fileMeta.path} ${line} ${error.message}`.toLowerCase()
           });
+          fileMeta.invalid += 1;
         }
       });
-
-      state.allFields = Array.from(fieldCounts.entries())
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .map(([key]) => key);
-
-      state.fields = state.allFields.slice(0, 12);
-
-      if (!state.fields.includes("_raw")) {
-        state.fields.push("_raw");
-      }
-
-      state.selectedRecord = state.records[0] || state.errors[0] || null;
-      state.selectedKind = state.records[0] ? "record" : "error";
     }
 
     function applyFilters() {
       state.filteredRecords = state.records.filter(matchesRecord);
       state.filteredErrors = state.errors.filter(matchesError);
       sortRecords();
+      reconcileSelection();
+    }
+
+    function reconcileSelection() {
+      if (state.selectedKind === "error") {
+        if (state.selectedRecord && state.filteredErrors.includes(state.selectedRecord)) return;
+      } else if (state.selectedRecord && state.filteredRecords.includes(state.selectedRecord)) {
+        return;
+      }
+      state.selectedRecord = state.filteredRecords[0] || state.filteredErrors[0] || null;
+      state.selectedKind = state.filteredRecords[0] ? "record" : "error";
     }
 
     function matchesRecord(record) {
-      if (!state.query) return true;
-      if (!state.fieldFilter) return record.searchText.includes(state.query);
-      return String(getFieldValue(record.value, state.fieldFilter) ?? "").toLowerCase().includes(state.query);
+      if (!isFileEnabled(record.fileId)) return false;
+      if (!matchesSearchQuery(record)) return false;
+      if (!matchesTypeFilter(record)) return false;
+      if (!matchesPayloadTypeFilter(record)) return false;
+      return true;
     }
 
     function matchesError(error) {
+      if (!isFileEnabled(error.fileId)) return false;
       if (!state.query) return true;
-      if (state.fieldFilter) return false;
       return error.searchText.includes(state.query);
     }
 
     function sortRecords() {
       const multiplier = state.sortDir === "asc" ? 1 : -1;
       state.filteredRecords = [...state.filteredRecords].sort((a, b) => compareRecords(a, b) * multiplier);
-      state.filteredErrors = [...state.filteredErrors].sort((a, b) => (a.lineNumber - b.lineNumber) * multiplier);
+      state.filteredErrors = [...state.filteredErrors].sort((a, b) => compareSourcePosition(a, b) * multiplier);
     }
 
     function compareRecords(a, b) {
-      if (state.sortField === "__line") return a.lineNumber - b.lineNumber;
-      const left = getFieldValue(a.value, state.sortField);
-      const right = getFieldValue(b.value, state.sortField);
-      if (left == null && right == null) return a.lineNumber - b.lineNumber;
+      const left = getRecordField(a, state.sortField);
+      const right = getRecordField(b, state.sortField);
+      if (left == null && right == null) return compareSourcePosition(a, b);
       if (left == null) return 1;
       if (right == null) return -1;
       if (typeof left === "number" && typeof right === "number") return left - right;
       if (typeof left === "boolean" && typeof right === "boolean") return Number(left) - Number(right);
-      return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: "base" });
+      return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: "base" }) || compareSourcePosition(a, b);
+    }
+
+    function compareSourcePosition(a, b) {
+      return String(a.filePath).localeCompare(String(b.filePath), undefined, { numeric: true, sensitivity: "base" }) || a.lineNumber - b.lineNumber;
+    }
+
+    function isFileEnabled(fileId) {
+      return state.files.find((file) => file.id === fileId)?.enabled ?? false;
+    }
+
+    function getRecordField(record, field) {
+      if (field === "__line" || field === "_line") return record.lineNumber;
+      if (field === "_file") return record.fileName;
+      if (field === "_path") return record.filePath;
+      if (field === "_raw") return JSON.stringify(record.value);
+      if (record.flatFields && Object.prototype.hasOwnProperty.call(record.flatFields, field)) {
+        return record.flatFields[field];
+      }
+      return getFieldValue(record.value, field);
     }
 
     function getFieldValue(value, field) {
-      if (field === "_raw") return JSON.stringify(value);
-      if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-      return value[field];
+      if (!value || typeof value !== "object" || !field) return undefined;
+      const segments = field.split(".");
+      let current = value;
+      for (const segment of segments) {
+        if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+        current = current[segment];
+      }
+      return current;
     }
 
     function renderFieldControls() {
-      els.fieldFilter.innerHTML = `<option value="">All fields</option>${state.allFields.map((field) => `<option value="${escapeAttr(field)}">${escapeHtml(field)}</option>`).join("")}`;
-      els.sortField.innerHTML = `<option value="__line">Line number</option>${state.allFields.map((field) => `<option value="${escapeAttr(field)}">${escapeHtml(field)}</option>`).join("")}`;
-      els.columnChips.innerHTML = state.allFields.slice(0, 24).map((field) => {
-        const active = state.fields.includes(field) ? " active" : "";
-        return `<button class="chip${active}" type="button" data-field="${escapeAttr(field)}">${escapeHtml(field)}</button>`;
+      const columnFields = uniqueFields(["_file", "_path", ...state.topLevelFields, "_raw"]);
+      els.typeFilter.disabled = state.typeOptions.length === 0;
+      els.typeFilter.innerHTML = state.typeOptions.length
+        ? `<option value="">All types</option>${state.typeOptions.map((option) => `<option value="${escapeAttr(option.value)}">${escapeHtml(option.label)}</option>`).join("")}`
+        : '<option value="">No type field found</option>';
+      const payloadTypeEnabled = selectedTypeCanHavePayloadType();
+      state.payloadTypeOptions = payloadTypeEnabled ? buildPayloadTypeOptions(state.typeFilter) : [];
+      if (!state.payloadTypeOptions.some((option) => option.value === state.payloadTypeFilter)) {
+        state.payloadTypeFilter = "";
+      }
+      els.payloadTypeFilter.disabled = !payloadTypeEnabled || state.payloadTypeOptions.length === 0;
+      els.payloadTypeFilter.innerHTML = !payloadTypeEnabled
+        ? '<option value="">N/A</option>'
+        : state.payloadTypeOptions.length
+          ? `<option value="">All payload types</option>${state.payloadTypeOptions.map((option) => `<option value="${escapeAttr(option.value)}">${escapeHtml(option.label)}</option>`).join("")}`
+          : '<option value="">No payload type found</option>';
+      els.typeFilter.value = state.typeFilter;
+      els.payloadTypeFilter.value = state.payloadTypeFilter;
+      els.columnChips.innerHTML = columnFields.map((field) => {
+        const active = state.tableFields.includes(field) ? " active" : "";
+        return `<button class="chip${active}" type="button" data-field="${escapeAttr(field)}">${escapeHtml(fieldLabel(field))}</button>`;
       }).join("");
 
       els.columnChips.querySelectorAll(".chip").forEach((chip) => {
@@ -974,14 +1203,80 @@
     }
 
     function toggleColumn(field) {
-      if (state.fields.includes(field)) {
-        state.fields = state.fields.filter((current) => current !== field);
+      if (state.tableFields.includes(field)) {
+        state.tableFields = state.tableFields.filter((current) => current !== field);
       } else {
-        state.fields = [...state.fields.filter((current) => current !== "_raw"), field, "_raw"];
+        state.tableFields = [...state.tableFields.filter((current) => current !== "_raw"), field, "_raw"];
       }
-      if (!state.fields.includes("_raw")) state.fields.push("_raw");
+      if (!state.tableFields.includes("_raw")) state.tableFields.push("_raw");
       renderFieldControls();
       render();
+    }
+
+    function fieldLabel(field) {
+      if (field === "__line" || field === "_line") return "Line number";
+      if (field === "_file") return "File";
+      if (field === "_path") return "Path";
+      if (field === "_raw") return "Raw JSON";
+      return field;
+    }
+
+    function uniqueFields(fields) {
+      return Array.from(new Set(fields));
+    }
+
+    function renderFileChips() {
+      if (!state.files.length) {
+        els.fileChips.innerHTML = '<span class="panel-subtitle">No files loaded</span>';
+        return;
+      }
+      els.fileChips.innerHTML = state.files.map((file) => {
+        const active = file.enabled ? " active" : "";
+        return `
+          <button class="file-chip${active}" type="button" data-file-id="${file.id}" title="${escapeAttr(file.path)}">
+            <span class="file-chip-name">${escapeHtml(file.path)}</span>
+            <span class="file-chip-count">${file.valid}/${file.invalid}</span>
+          </button>`;
+      }).join("");
+      els.fileChips.querySelectorAll(".file-chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+          const file = state.files.find((candidate) => candidate.id === Number(chip.dataset.fileId));
+          if (!file) return;
+          file.enabled = !file.enabled;
+          state.page = 1;
+          applyFilters();
+          renderFileChips();
+          render();
+        });
+      });
+    }
+
+    function setAllFilesEnabled(enabled) {
+      state.files.forEach((file) => {
+        file.enabled = enabled;
+      });
+      state.page = 1;
+      applyFilters();
+      renderFileChips();
+      render();
+    }
+
+    function clearFiles() {
+      resetForFiles([]);
+      renderFileChips();
+      renderFieldControls();
+      applyFilters();
+      render();
+    }
+
+    function updateLoadedFileLabel() {
+      if (!state.files.length) {
+        els.fileName.textContent = "Open local .jsonl, .json, .log, or .txt files";
+      } else if (state.files.length === 1) {
+        els.fileName.textContent = state.files[0].path;
+      } else {
+        els.fileName.textContent = `${state.files.length} files loaded`;
+      }
     }
 
     function render() {
@@ -991,11 +1286,13 @@
     }
 
     function renderStats() {
-      const totalLines = state.records.length + state.errors.length;
+      const enabledRecords = state.records.filter((record) => isFileEnabled(record.fileId));
+      const enabledErrors = state.errors.filter((error) => isFileEnabled(error.fileId));
+      const totalLines = enabledRecords.length + enabledErrors.length;
       const matches = state.view === "errors" ? state.filteredErrors.length : state.filteredRecords.length;
       els.totalRows.textContent = totalLines.toLocaleString();
-      els.validRows.textContent = state.records.length.toLocaleString();
-      els.invalidRows.textContent = state.errors.length.toLocaleString();
+      els.validRows.textContent = enabledRecords.length.toLocaleString();
+      els.invalidRows.textContent = enabledErrors.length.toLocaleString();
       els.fieldCount.textContent = state.allFields.length.toLocaleString();
       els.matchCount.textContent = matches.toLocaleString();
       els.sortDir.textContent = state.sortDir === "asc" ? "Ascending" : "Descending";
@@ -1015,23 +1312,23 @@
     function renderTable() {
       const rows = getPagedRows(state.filteredRecords);
       if (!state.records.length) {
-        els.tableWrap.innerHTML = '<div class="empty">Choose a JSONL file to start reading records.</div>';
+        els.tableWrap.innerHTML = '<div class="empty">Choose one or more JSONL files to start reading records.</div>';
         els.recordRange.textContent = "No file loaded";
         return;
       }
       if (!rows.length) {
-        els.tableWrap.innerHTML = '<div class="empty">No records match the current search.</div>';
+        els.tableWrap.innerHTML = '<div class="empty">No records match the current filters.</div>';
         els.recordRange.textContent = "No matching records";
         return;
       }
 
-      const fields = state.fields;
+      const fields = state.tableFields;
       const lineSort = sortIndicator("__line");
-      const thead = `<thead><tr><th class="sortable" data-sort="__line">Line${lineSort}</th>${fields.map((field) => `<th class="sortable" data-sort="${escapeAttr(field)}">${escapeHtml(field)}${sortIndicator(field)}</th>`).join("")}</tr></thead>`;
+      const thead = `<thead><tr><th class="sortable" data-sort="__line">Line${lineSort}</th>${fields.map((field) => `<th class="sortable" data-sort="${escapeAttr(field)}">${escapeHtml(fieldLabel(field))}${sortIndicator(field)}</th>`).join("")}</tr></thead>`;
       const tbody = rows.map((record) => {
-        const cells = fields.map((field) => `<td><div class="value">${highlight(formatCell(record.value, field))}</div></td>`).join("");
+        const cells = fields.map((field) => `<td><div class="value">${highlight(formatCell(record, field))}</div></td>`).join("");
         const selected = state.selectedRecord === record && state.selectedKind === "record" ? " selected" : "";
-        return `<tr class="${selected}" data-kind="record" data-line="${record.lineNumber}"><td class="line-cell">${record.lineNumber}</td>${cells}</tr>`;
+        return `<tr class="${selected}" data-kind="record" data-id="${escapeAttr(record.id)}"><td class="line-cell">${record.lineNumber}</td>${cells}</tr>`;
       }).join("");
 
       els.tableWrap.innerHTML = `<table>${thead}<tbody>${tbody}</tbody></table>`;
@@ -1051,8 +1348,8 @@
       const body = rows.map((record) => {
         const selected = state.selectedRecord === record && state.selectedKind === "record" ? " selected" : "";
         return `
-          <tr class="${selected}" data-kind="record" data-line="${record.lineNumber}">
-            <td class="line-cell">${record.lineNumber}</td>
+          <tr class="${selected}" data-kind="record" data-id="${escapeAttr(record.id)}">
+            <td class="line-cell">${record.lineNumber}<br>${escapeHtml(record.fileName)}</td>
             <td><div class="value">${highlight(JSON.stringify(record.value))}</div></td>
           </tr>`;
       }).join("");
@@ -1078,8 +1375,8 @@
       const body = rows.map((error) => {
         const selected = state.selectedRecord === error && state.selectedKind === "error" ? " selected" : "";
         return `
-          <tr class="error-row${selected}" data-kind="error" data-line="${error.lineNumber}">
-            <td class="line-cell">${error.lineNumber}</td>
+          <tr class="error-row${selected}" data-kind="error" data-id="${escapeAttr(error.id)}">
+            <td class="line-cell">${error.lineNumber}<br>${escapeHtml(error.fileName)}</td>
             <td class="error-text">${escapeHtml(error.message)}</td>
             <td><div class="value">${highlight(error.raw)}</div></td>
           </tr>`;
@@ -1093,11 +1390,10 @@
     function bindRowSelection() {
       els.tableWrap.querySelectorAll("tbody tr").forEach((row) => {
         row.addEventListener("click", () => {
-          const lineNumber = Number(row.dataset.line);
           state.selectedKind = row.dataset.kind;
           state.selectedRecord = state.selectedKind === "error"
-            ? state.errors.find((error) => error.lineNumber === lineNumber)
-            : state.records.find((record) => record.lineNumber === lineNumber);
+            ? state.errors.find((error) => error.id === row.dataset.id)
+            : state.records.find((record) => record.id === row.dataset.id);
           render();
         });
       });
@@ -1113,7 +1409,6 @@
             state.sortField = field;
             state.sortDir = "asc";
           }
-          els.sortField.value = state.sortField;
           state.page = 1;
           applyFilters();
           render();
@@ -1134,13 +1429,15 @@
       }
 
       if (state.selectedKind === "error") {
-        els.detailSubtitle.textContent = `Line ${state.selectedRecord.lineNumber} parse error`;
+        els.detailSubtitle.textContent = `${state.selectedRecord.fileName} - line ${state.selectedRecord.lineNumber} parse error`;
         if (state.detailView === "raw") {
           els.detailBody.innerHTML = `<pre>${escapeHtml(state.selectedRecord.raw)}</pre>`;
           return;
         }
         els.detailBody.innerHTML = `
           <div class="kv-list">
+            <div class="kv-row"><div class="kv-key">file</div><div class="kv-value">${escapeHtml(state.selectedRecord.fileName)}</div></div>
+            <div class="kv-row"><div class="kv-key">path</div><div class="kv-value">${escapeHtml(state.selectedRecord.filePath)}</div></div>
             <div class="kv-row"><div class="kv-key">line</div><div class="kv-value"><span class="value-number">${state.selectedRecord.lineNumber}</span></div></div>
             <div class="kv-row"><div class="kv-key">error</div><div class="kv-value error-text">${escapeHtml(state.selectedRecord.message)}</div></div>
             <div class="kv-row"><div class="kv-key">raw</div><div class="kv-value"><span class="value-string long">${highlightDetail(state.selectedRecord.raw)}</span></div></div>
@@ -1148,12 +1445,18 @@
         return;
       }
 
-      els.detailSubtitle.textContent = `Line ${state.selectedRecord.lineNumber}`;
+      els.detailSubtitle.textContent = `${state.selectedRecord.fileName} - line ${state.selectedRecord.lineNumber}`;
       if (state.detailView === "raw") {
         els.detailBody.innerHTML = `<pre>${highlightDetail(JSON.stringify(state.selectedRecord.value, null, 2))}</pre>`;
         return;
       }
-      els.detailBody.innerHTML = renderReadableValue(state.selectedRecord.value, 0, "record");
+      els.detailBody.innerHTML = `
+        <div class="kv-list">
+          <div class="kv-row"><div class="kv-key">file</div><div class="kv-value">${escapeHtml(state.selectedRecord.fileName)}</div></div>
+          <div class="kv-row"><div class="kv-key">path</div><div class="kv-value">${escapeHtml(state.selectedRecord.filePath)}</div></div>
+          <div class="kv-row"><div class="kv-key">line</div><div class="kv-value"><span class="value-number">${state.selectedRecord.lineNumber}</span></div></div>
+        </div>
+        ${renderReadableValue(state.selectedRecord.value, 0, "record")}`;
     }
 
     function renderReadableValue(value, depth, label) {
@@ -1318,12 +1621,168 @@
       window.addEventListener("pointerup", onUp);
     }
 
-    function formatCell(value, field) {
-      const cell = getFieldValue(value, field);
+    function formatCell(record, field) {
+      const cell = getRecordField(record, field);
       if (cell === undefined) return "";
       if (cell === null) return "null";
       if (typeof cell === "string") return cell;
       return JSON.stringify(cell);
+    }
+
+    function flattenRecordFields(value) {
+      const flat = {};
+      if (Array.isArray(value)) {
+        flattenArrayFields(value, "[]", flat);
+        return flat;
+      }
+      if (!value || typeof value !== "object") return flat;
+      Object.entries(value).forEach(([key, child]) => {
+        flattenFieldValue(child, key, flat);
+      });
+      return flat;
+    }
+
+    function getTopLevelFieldNames(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      return Object.keys(value);
+    }
+
+    function flattenFieldValue(value, path, flat) {
+      storeFlatFieldValue(flat, path, value);
+      if (Array.isArray(value)) {
+        flattenArrayFields(value, path, flat);
+        return;
+      }
+      if (!value || typeof value !== "object") return;
+      Object.entries(value).forEach(([key, child]) => {
+        flattenFieldValue(child, `${path}.${key}`, flat);
+      });
+    }
+
+    function flattenArrayFields(values, path, flat) {
+      values.forEach((item) => {
+        if (Array.isArray(item)) {
+          flattenArrayFields(item, `${path}[]`, flat);
+          return;
+        }
+        if (item && typeof item === "object") {
+          Object.entries(item).forEach(([key, child]) => {
+            flattenFieldValue(child, `${path}[].${key}`, flat);
+          });
+          return;
+        }
+        storeFlatFieldValue(flat, `${path}[]`, item);
+      });
+    }
+
+    function storeFlatFieldValue(flat, path, value) {
+      if (!Object.prototype.hasOwnProperty.call(flat, path)) {
+        flat[path] = value;
+        return;
+      }
+      if (Array.isArray(flat[path])) {
+        flat[path].push(value);
+        return;
+      }
+      flat[path] = [flat[path], value];
+    }
+
+    function buildTypeOptions() {
+      const counts = new Map();
+      state.records.forEach((record) => {
+        const typeValue = getTopLevelRecordType(record);
+        if (typeValue === undefined) return;
+        const label = formatFilterValue(typeValue);
+        counts.set(label, (counts.get(label) || 0) + 1);
+      });
+      return Array.from(counts.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: "base" }))
+        .map(([value, count]) => ({
+          value,
+          label: `${value} (${count.toLocaleString()})`
+        }));
+    }
+
+    function buildPayloadTypeOptions(parentType) {
+      const counts = new Map();
+      state.records.forEach((record) => {
+        if (getTopLevelRecordType(record) !== parentType) return;
+        const typeValue = getPayloadType(record);
+        if (typeValue === undefined) return;
+        const label = formatFilterValue(typeValue);
+        counts.set(label, (counts.get(label) || 0) + 1);
+      });
+      return Array.from(counts.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: "base" }))
+        .map(([value, count]) => ({
+          value,
+          label: `${value} (${count.toLocaleString()})`
+        }));
+    }
+
+    function getTopLevelRecordType(record) {
+      if (!record.value || typeof record.value !== "object" || Array.isArray(record.value)) return undefined;
+      if (!Object.prototype.hasOwnProperty.call(record.value, "type")) return undefined;
+      return record.value.type;
+    }
+
+    function recordCanHavePayloadType(record) {
+      const typeValue = getTopLevelRecordType(record);
+      return canTypeHavePayloadType(typeValue);
+    }
+
+    function selectedTypeCanHavePayloadType() {
+      return canTypeHavePayloadType(state.typeFilter);
+    }
+
+    function canTypeHavePayloadType(typeValue) {
+      return typeValue === "response_item" || typeValue === "event_msg";
+    }
+
+    function getPayloadType(record) {
+      if (!recordCanHavePayloadType(record)) return undefined;
+      const payload = record.value?.payload;
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+      if (!Object.prototype.hasOwnProperty.call(payload, "type")) return undefined;
+      return payload.type;
+    }
+
+    function matchesSearchQuery(record) {
+      if (!state.query) return true;
+      return record.searchText.includes(state.query);
+    }
+
+    function matchesTypeFilter(record) {
+      if (!state.typeFilter) return true;
+      return matchesExactValue(getTopLevelRecordType(record), state.typeFilter);
+    }
+
+    function matchesPayloadTypeFilter(record) {
+      if (!state.payloadTypeFilter) return true;
+      return matchesExactValue(getPayloadType(record), state.payloadTypeFilter);
+    }
+
+    function matchesExactValue(candidate, rawValue) {
+      if (Array.isArray(candidate)) {
+        return candidate.some((item) => matchesExactValue(item, rawValue));
+      }
+      if (candidate === null) return String(rawValue).trim().toLowerCase() === "null";
+      if (typeof candidate === "number") {
+        const parsed = Number(rawValue);
+        return Number.isFinite(parsed) && candidate === parsed;
+      }
+      if (typeof candidate === "boolean") {
+        const normalized = String(rawValue).trim().toLowerCase();
+        return normalized === String(candidate);
+      }
+      return formatFilterValue(candidate).toLowerCase() === String(rawValue).trim().toLowerCase();
+    }
+
+    function formatFilterValue(value) {
+      if (value === undefined) return "";
+      if (value === null) return "null";
+      if (typeof value === "string") return value;
+      return JSON.stringify(value);
     }
 
     function highlight(text) {
@@ -1375,13 +1834,18 @@
 
     function exportFiltered() {
       const rows = state.view === "errors"
-        ? state.filteredErrors.map((error) => error.raw)
-        : state.filteredRecords.map((record) => JSON.stringify(record.value));
+        ? state.filteredErrors.map((error) => `${error.filePath}\t${error.lineNumber}\t${error.message}\t${error.raw}`)
+        : state.filteredRecords.map((record) => JSON.stringify({
+            _sourceFile: record.fileName,
+            _sourcePath: record.filePath,
+            _sourceLine: record.lineNumber,
+            ...record.value
+          }));
       if (!rows.length) return;
-      const blob = new Blob([rows.join("\n") + "\n"], { type: "application/x-ndjson" });
+      const blob = new Blob([rows.join("\n") + "\n"], { type: state.view === "errors" ? "text/plain" : "application/x-ndjson" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      const baseName = state.fileName.replace(/\.[^.]+$/, "") || "jsonl";
+      const baseName = state.files.length === 1 ? state.files[0].name.replace(/\.[^.]+$/, "") : "jsonl-files";
       link.href = url;
       link.download = `${baseName}-filtered.${state.view === "errors" ? "txt" : "jsonl"}`;
       document.body.appendChild(link);
