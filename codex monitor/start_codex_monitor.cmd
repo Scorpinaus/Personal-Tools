@@ -1,5 +1,5 @@
 @echo off
-set "SCRIPT=%USERPROFILE%\.codex\tools\codex_usage_monitor.ps1"
+set "SCRIPT=%~dp0codex_usage_monitor.ps1"
 
 if not exist "%SCRIPT%" (
   echo Codex usage monitor script not found:

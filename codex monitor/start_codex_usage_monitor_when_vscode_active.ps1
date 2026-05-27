@@ -1,5 +1,5 @@
 param(
-    [string]$MonitorScript = (Join-Path $env:USERPROFILE ".codex\tools\codex_usage_monitor.ps1"),
+    [string]$MonitorScript = (Join-Path $PSScriptRoot "codex_usage_monitor.ps1"),
     [int]$CheckSeconds = 5,
     [int]$RefreshSeconds = 3
 )

@@ -1,8 +1,12 @@
 param(
-    [string]$CodexHome = (Join-Path $env:USERPROFILE ".codex"),
+    [string]$CodexHome = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path ([Environment]::GetFolderPath("UserProfile")) ".codex" }),
     [int]$RefreshSeconds = 3,
     [int]$MaxFiles = 5,
     [int]$TailLines = 500,
+    [int]$ConversationLookbackHours = 24,
+    [int]$ConversationFallbackLookbackDays = 7,
+    [int]$ConversationFallbackMaxFiles = 5,
+    [int]$ConversationFallbackTailLines = 500,
     [int]$RollingMaxFiles = 0,
     [int]$RollingTailLines = 0,
     [int]$CostMaxFiles = 0,
@@ -10,7 +14,11 @@ param(
     [int]$CostFiveHourRefreshSeconds = 60,
     [int]$CostWeekRefreshSeconds = 60,
     [int]$CostMonthRefreshSeconds = 86400,
+    [int]$RateLimitHistoryDays = 8,
+    [int]$RateLimitHistorySampleSeconds = 300,
     [double]$UsdToSgdRate = 1.274,
+    [ValidateSet("ApiUsdEstimate", "CodexCredits")]
+    [string]$CostBasisMode = "ApiUsdEstimate",
     [ValidateSet("Standard", "Batch", "Flex", "Priority")]
     [string]$PricingMode = "Standard",
     [switch]$Once,
@@ -18,12 +26,15 @@ param(
     [switch]$LibraryOnly,
     [switch]$Console,
     [switch]$NoOpen,
+    [switch]$DisableRateLimitHistory,
+    [switch]$BackfillRateLimitHistory,
     [int]$DashboardPort = 8787
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:CostWindowCache = @{}
+$script:CostPeriodCache = @{}
 
 function Get-PropValue {
     param(
@@ -195,13 +206,17 @@ function New-TokenBucket {
         PricingBand = $PricingBand
         PricingMode = $PricingMode
         BillingConfidence = "Low"
+        CostBasisMode = $CostBasisMode
+        CostUnit = $null
         Total = 0L
         Input = 0L
         CachedInput = 0L
         Output = 0L
         Reasoning = 0L
         Events = 0
+        EstimatedCost = $null
         EstimatedCostUsd = $null
+        EstimatedCostCredits = $null
     }
 }
 
@@ -273,6 +288,35 @@ function Test-SameMetrics {
         -and [long]$Left.Reasoning -eq [long]$Right.Reasoning
 }
 
+function Test-AnyMetrics {
+    param([object]$Metrics)
+
+    if ($null -eq $Metrics) {
+        return $false
+    }
+
+    return [long]$Metrics.Total -ne 0 `
+        -or [long]$Metrics.Input -ne 0 `
+        -or [long]$Metrics.CachedInput -ne 0 `
+        -or [long]$Metrics.Output -ne 0 `
+        -or [long]$Metrics.Reasoning -ne 0
+}
+
+function Get-MetricsKey {
+    param([object]$Metrics)
+
+    if ($null -eq $Metrics) {
+        return "null"
+    }
+
+    return "{0}/{1}/{2}/{3}/{4}" -f `
+        [long]$Metrics.Total,
+        [long]$Metrics.Input,
+        [long]$Metrics.CachedInput,
+        [long]$Metrics.Output,
+        [long]$Metrics.Reasoning
+}
+
 function Get-EventTime {
     param([object]$Entry)
 
@@ -297,20 +341,6 @@ function Get-JsonNumberFromBody {
 
     $pattern = '"' + [regex]::Escape($Name) + '"\s*:\s*(?<value>-?\d+)'
     if ($Body -match $pattern) {
-        return [long]$Matches["value"]
-    }
-
-    return 0L
-}
-
-function Get-JsonNumberFromLine {
-    param(
-        [string]$Line,
-        [string]$Name
-    )
-
-    $pattern = '"' + [regex]::Escape($Name) + '"\s*:\s*(?<value>-?\d+)'
-    if ($Line -match $pattern) {
         return [long]$Matches["value"]
     }
 
@@ -362,18 +392,121 @@ function Get-JsonStringFromLine {
     return $null
 }
 
-function Get-UsageMetricsFromJsonLine {
+function Get-UsageMetricsFromEntry {
     param(
-        [string]$Line,
-        [string]$PropertyName
+        [object]$Entry,
+        [string[]]$Names
     )
 
-    $pattern = '"' + [regex]::Escape($PropertyName) + '"\s*:\s*\{(?<body>[^}]*)\}'
-    if ($Line -notmatch $pattern) {
+    $payload = Get-PropValue $Entry @("payload")
+    $info = Get-PropValue $payload @("info")
+    $usage = Get-PropValue $info $Names
+    if ($null -eq $usage) {
         return $null
     }
 
-    return Convert-UsageJsonBodyToMetrics $Matches["body"]
+    return Convert-UsageToMetrics $usage
+}
+
+function Get-UsageDeltaMetrics {
+    param(
+        [object]$PreviousTotal,
+        [object]$CurrentTotal,
+        [object]$LastUsage
+    )
+
+    if ($null -eq $CurrentTotal) {
+        return $null
+    }
+
+    if ($null -ne $LastUsage -and (Test-AnyMetrics $LastUsage)) {
+        return [pscustomobject]@{
+            Metrics = $LastUsage
+            Source = "last_token_usage"
+        }
+    }
+
+    $delta = Get-PositiveDeltaMetrics -Previous $PreviousTotal -Current $CurrentTotal
+    if ($null -eq $delta) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Metrics = $delta
+        Source = "total_token_usage_delta"
+    }
+}
+
+function Get-SessionUsageDeltas {
+    param(
+        [string]$Path,
+        [int]$Tail
+    )
+
+    $currentModel = Get-SessionInitialModel $Path
+    $previousTotal = $null
+    $seenEvents = [System.Collections.Generic.HashSet[string]]::new()
+    $rows = @()
+    # Usage deltas need the pre-window cumulative baseline; tailing can undercount the first in-window event.
+    $lines = @(Get-SessionLines -Path $Path -Tail 0)
+
+    foreach ($line in $lines) {
+        if ($line -like '*"turn_context"*') {
+            $model = Get-JsonStringFromLine $line "model"
+            if (-not [string]::IsNullOrWhiteSpace($model)) {
+                $currentModel = $model
+            }
+        }
+
+        if ($line -notlike '*"total_token_usage"*' -and $line -notlike '*"last_token_usage"*') {
+            continue
+        }
+
+        try {
+            $entry = $line | ConvertFrom-Json
+        }
+        catch {
+            continue
+        }
+
+        $eventTime = Get-EventTime $entry
+        if ($null -eq $eventTime) {
+            continue
+        }
+
+        $currentTotal = Get-UsageMetricsFromEntry $entry @("total_token_usage", "totalTokenUsage")
+        if ($null -eq $currentTotal) {
+            continue
+        }
+
+        $lastUsage = Get-UsageMetricsFromEntry $entry @("last_token_usage", "lastTokenUsage")
+        $eventKey = "{0:o}|{1}|{2}" -f $eventTime, (Get-MetricsKey $currentTotal), (Get-MetricsKey $lastUsage)
+        if (-not $seenEvents.Add($eventKey)) {
+            continue
+        }
+
+        if (Test-SameMetrics $previousTotal $currentTotal) {
+            continue
+        }
+
+        $delta = Get-UsageDeltaMetrics -PreviousTotal $previousTotal -CurrentTotal $currentTotal -LastUsage $lastUsage
+        $previousTotal = $currentTotal
+
+        if ($null -eq $delta) {
+            continue
+        }
+
+        $rows += [pscustomobject]@{
+            Timestamp = $eventTime
+            Model = $currentModel
+            Metrics = $delta.Metrics
+            Source = $delta.Source
+            TotalUsage = $currentTotal
+            LastUsage = $lastUsage
+        }
+    }
+
+    return @($rows)
 }
 
 function Get-LocalWindowStartUtc {
@@ -410,34 +543,145 @@ function Get-CostWindowDefinitions {
     return @($allWindows | Where-Object { $Names -contains $_.Name })
 }
 
+function New-PeriodWindow {
+    param(
+        [string]$Group,
+        [string]$Name,
+        [string]$Label,
+        [datetime]$StartUtc,
+        [datetime]$EndUtc,
+        [int]$SortOrder,
+        [int]$RefreshSeconds
+    )
+
+    [pscustomobject]@{
+        Group = $Group
+        Name = $Name
+        Label = $Label
+        StartUtc = $StartUtc
+        EndUtc = $EndUtc
+        SortOrder = $SortOrder
+        RefreshSeconds = $RefreshSeconds
+    }
+}
+
+function Format-PeriodRangeLabel {
+    param(
+        [datetime]$StartLocal,
+        [datetime]$EndLocal,
+        [switch]$IncludeTime
+    )
+
+    if ($IncludeTime) {
+        return ("{0:MMM d HH:mm}-{1:HH:mm}" -f $StartLocal, $EndLocal)
+    }
+
+    $inclusiveEnd = $EndLocal.AddSeconds(-1)
+    if ($StartLocal.Date -eq $inclusiveEnd.Date) {
+        return ("{0:MMM d}" -f $StartLocal)
+    }
+
+    return ("{0:MMM d}-{1:MMM d}" -f $StartLocal, $inclusiveEnd)
+}
+
+function Get-ModelPeriodWindowDefinitions {
+    $nowLocal = Get-Date
+    $windows = @()
+
+    for ($index = 0; $index -lt 5; $index++) {
+        $endLocal = $nowLocal.AddHours(-5 * $index)
+        $startLocal = $endLocal.AddHours(-5)
+        $label = if ($index -eq 0) {
+            "Last 5h"
+        }
+        else {
+            "{0}-{1}h ago" -f (5 * $index), (5 * ($index + 1))
+        }
+
+        $windows += New-PeriodWindow `
+            -Group "Last 5 hours" `
+            -Name ("5h-{0}" -f $index) `
+            -Label $label `
+            -StartUtc $startLocal.ToUniversalTime() `
+            -EndUtc $endLocal.ToUniversalTime() `
+            -SortOrder $index `
+            -RefreshSeconds $CostFiveHourRefreshSeconds
+    }
+
+    $todayLocal = $nowLocal.Date
+    for ($index = 0; $index -lt 7; $index++) {
+        $startLocal = $todayLocal.AddDays(-1 * $index)
+        $endLocal = $startLocal.AddDays(1)
+        $label = if ($index -eq 0) {
+            "Today"
+        }
+        elseif ($index -eq 1) {
+            "Yesterday"
+        }
+        else {
+            "{0:MMM d}" -f $startLocal
+        }
+
+        $windows += New-PeriodWindow `
+            -Group "This week" `
+            -Name ("day-{0}" -f $index) `
+            -Label $label `
+            -StartUtc $startLocal.ToUniversalTime() `
+            -EndUtc $endLocal.ToUniversalTime() `
+            -SortOrder $index `
+            -RefreshSeconds $CostWeekRefreshSeconds
+    }
+
+    for ($index = 0; $index -lt 4; $index++) {
+        $endLocal = $nowLocal.Date.AddDays(1).AddDays(-7 * $index)
+        $startLocal = $endLocal.AddDays(-7)
+        $windows += New-PeriodWindow `
+            -Group "This month" `
+            -Name ("week-{0}" -f $index) `
+            -Label (Format-PeriodRangeLabel -StartLocal $startLocal -EndLocal $endLocal) `
+            -StartUtc $startLocal.ToUniversalTime() `
+            -EndUtc $endLocal.ToUniversalTime() `
+            -SortOrder $index `
+            -RefreshSeconds $CostMonthRefreshSeconds
+    }
+
+    return @($windows)
+}
+
 function Get-ModelPricingTable {
     @(
-        [pscustomobject]@{ Mode = "Standard"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 30.00 }
-        [pscustomobject]@{ Mode = "Standard"; Model = "gpt-5.5"; ContextBand = "Long"; InputPerMillion = 10.00; CachedInputPerMillion = 1.00; OutputPerMillion = 45.00 }
-        [pscustomobject]@{ Mode = "Standard"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 15.00 }
-        [pscustomobject]@{ Mode = "Standard"; Model = "gpt-5.4"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 22.50 }
-        [pscustomobject]@{ Mode = "Standard"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 0.75; CachedInputPerMillion = 0.075; OutputPerMillion = 4.50 }
-        [pscustomobject]@{ Mode = "Standard"; Model = "gpt-5.4-nano"; ContextBand = "Short"; InputPerMillion = 0.20; CachedInputPerMillion = 0.02; OutputPerMillion = 1.25 }
-        [pscustomobject]@{ Mode = "Standard"; Model = "gpt-5.3-codex"; ContextBand = "Short"; InputPerMillion = 1.75; CachedInputPerMillion = 0.175; OutputPerMillion = 14.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 30.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.5"; ContextBand = "Long"; InputPerMillion = 10.00; CachedInputPerMillion = 1.00; OutputPerMillion = 45.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 15.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.4"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 22.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 0.75; CachedInputPerMillion = 0.075; OutputPerMillion = 4.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.4-nano"; ContextBand = "Short"; InputPerMillion = 0.20; CachedInputPerMillion = 0.02; OutputPerMillion = 1.25 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.3-codex"; ContextBand = "Short"; InputPerMillion = 1.75; CachedInputPerMillion = 0.175; OutputPerMillion = 14.00 }
 
-        [pscustomobject]@{ Mode = "Batch"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 15.00 }
-        [pscustomobject]@{ Mode = "Batch"; Model = "gpt-5.5"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 22.50 }
-        [pscustomobject]@{ Mode = "Batch"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 1.25; CachedInputPerMillion = 0.13; OutputPerMillion = 7.50 }
-        [pscustomobject]@{ Mode = "Batch"; Model = "gpt-5.4"; ContextBand = "Long"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 11.25 }
-        [pscustomobject]@{ Mode = "Batch"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 0.375; CachedInputPerMillion = 0.0375; OutputPerMillion = 2.25 }
-        [pscustomobject]@{ Mode = "Batch"; Model = "gpt-5.4-nano"; ContextBand = "Short"; InputPerMillion = 0.10; CachedInputPerMillion = 0.01; OutputPerMillion = 0.625 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 15.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.5"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 22.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 1.25; CachedInputPerMillion = 0.125; OutputPerMillion = 7.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.4"; ContextBand = "Long"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 11.25 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 0.375; CachedInputPerMillion = 0.0375; OutputPerMillion = 2.25 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.4-nano"; ContextBand = "Short"; InputPerMillion = 0.10; CachedInputPerMillion = 0.01; OutputPerMillion = 0.625 }
 
-        [pscustomobject]@{ Mode = "Flex"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 15.00 }
-        [pscustomobject]@{ Mode = "Flex"; Model = "gpt-5.5"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 22.50 }
-        [pscustomobject]@{ Mode = "Flex"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 1.25; CachedInputPerMillion = 0.13; OutputPerMillion = 7.50 }
-        [pscustomobject]@{ Mode = "Flex"; Model = "gpt-5.4"; ContextBand = "Long"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 11.25 }
-        [pscustomobject]@{ Mode = "Flex"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 0.375; CachedInputPerMillion = 0.0375; OutputPerMillion = 2.25 }
-        [pscustomobject]@{ Mode = "Flex"; Model = "gpt-5.4-nano"; ContextBand = "Short"; InputPerMillion = 0.10; CachedInputPerMillion = 0.01; OutputPerMillion = 0.625 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 15.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.5"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 22.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 1.25; CachedInputPerMillion = 0.125; OutputPerMillion = 7.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.4"; ContextBand = "Long"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 11.25 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 0.375; CachedInputPerMillion = 0.0375; OutputPerMillion = 2.25 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.4-nano"; ContextBand = "Short"; InputPerMillion = 0.10; CachedInputPerMillion = 0.01; OutputPerMillion = 0.625 }
 
-        [pscustomobject]@{ Mode = "Priority"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 12.50; CachedInputPerMillion = 1.25; OutputPerMillion = 75.00 }
-        [pscustomobject]@{ Mode = "Priority"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 30.00 }
-        [pscustomobject]@{ Mode = "Priority"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 1.50; CachedInputPerMillion = 0.15; OutputPerMillion = 9.00 }
-        [pscustomobject]@{ Mode = "Priority"; Model = "gpt-5.3-codex"; ContextBand = "Short"; InputPerMillion = 3.50; CachedInputPerMillion = 0.35; OutputPerMillion = 28.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 12.50; CachedInputPerMillion = 1.25; OutputPerMillion = 75.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 30.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 1.50; CachedInputPerMillion = 0.15; OutputPerMillion = 9.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.3-codex"; ContextBand = "Short"; InputPerMillion = 3.50; CachedInputPerMillion = 0.35; OutputPerMillion = 28.00 }
+
+        [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 125.00; CachedInputPerMillion = 12.50; OutputPerMillion = 750.00 }
+        [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 62.50; CachedInputPerMillion = 6.25; OutputPerMillion = 375.00 }
+        [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 18.75; CachedInputPerMillion = 1.875; OutputPerMillion = 113.00 }
+        [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.3-codex"; ContextBand = "Short"; InputPerMillion = 43.75; CachedInputPerMillion = 4.375; OutputPerMillion = 350.00 }
+        [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.2"; ContextBand = "Short"; InputPerMillion = 43.75; CachedInputPerMillion = 4.375; OutputPerMillion = 350.00 }
     )
 }
 
@@ -470,12 +714,24 @@ function Get-ModelPricing {
     }
 
     $pricing = Get-ModelPricingTable |
-        Where-Object { $_.Mode -eq $PricingMode -and $_.Model -eq $Model -and $_.ContextBand -eq $PricingBand } |
+        Where-Object { $_.Basis -eq $CostBasisMode -and $_.Mode -eq $PricingMode -and $_.Model -eq $Model -and $_.ContextBand -eq $PricingBand } |
         Select-Object -First 1
 
     if ($null -eq $pricing -and $PricingBand -eq "Long") {
         $pricing = Get-ModelPricingTable |
-            Where-Object { $_.Mode -eq $PricingMode -and $_.Model -eq $Model -and $_.ContextBand -eq "Short" } |
+            Where-Object { $_.Basis -eq $CostBasisMode -and $_.Mode -eq $PricingMode -and $_.Model -eq $Model -and $_.ContextBand -eq "Short" } |
+            Select-Object -First 1
+    }
+
+    if ($null -eq $pricing -and $CostBasisMode -eq "CodexCredits" -and $PricingMode -ne "Standard") {
+        $pricing = Get-ModelPricingTable |
+            Where-Object { $_.Basis -eq $CostBasisMode -and $_.Mode -eq "Standard" -and $_.Model -eq $Model -and $_.ContextBand -eq $PricingBand } |
+            Select-Object -First 1
+    }
+
+    if ($null -eq $pricing -and $CostBasisMode -eq "CodexCredits" -and $PricingBand -eq "Long") {
+        $pricing = Get-ModelPricingTable |
+            Where-Object { $_.Basis -eq $CostBasisMode -and $_.Mode -eq "Standard" -and $_.Model -eq $Model -and $_.ContextBand -eq "Short" } |
             Select-Object -First 1
     }
 
@@ -510,6 +766,7 @@ function Set-EstimatedCost {
         $Bucket.PricingBand = Get-PricingBand -Model $Bucket.Model -InputTokens ([long]$Bucket.Input)
     }
     $Bucket.PricingMode = $PricingMode
+    $Bucket.CostBasisMode = $CostBasisMode
 
     $pricing = Get-ModelPricing -Model $Bucket.Model -InputTokens ([long]$Bucket.Input) -PricingBand $Bucket.PricingBand
     if ($null -eq $pricing) {
@@ -518,6 +775,7 @@ function Set-EstimatedCost {
     }
 
     $Bucket.BillingConfidence = "High"
+    $Bucket.CostUnit = $pricing.Unit
 
     $cachedInput = [Math]::Max(0L, [long]$Bucket.CachedInput)
     $uncachedInput = [Math]::Max(0L, [long]$Bucket.Input - $cachedInput)
@@ -526,7 +784,16 @@ function Set-EstimatedCost {
         ($cachedInput * [double]$pricing.CachedInputPerMillion / 1000000.0) +
         ([long]$Bucket.Output * [double]$pricing.OutputPerMillion / 1000000.0)
 
-    $Bucket.EstimatedCostUsd = [Math]::Round($cost, 4)
+    $roundedCost = [Math]::Round($cost, 4)
+    $Bucket.EstimatedCost = $roundedCost
+    if ($pricing.Unit -eq "USD") {
+        $Bucket.EstimatedCostUsd = $roundedCost
+        $Bucket.EstimatedCostCredits = $null
+    }
+    elseif ($pricing.Unit -eq "credits") {
+        $Bucket.EstimatedCostUsd = $null
+        $Bucket.EstimatedCostCredits = $roundedCost
+    }
 }
 
 function Get-EstimatedTextChars {
@@ -588,6 +855,39 @@ function Convert-CharsToEstimatedTokens {
     return [long][Math]::Ceiling([double]$Chars / 4.0)
 }
 
+function Get-TextFieldChars {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return 0L
+    }
+
+    if ($Value -is [string]) {
+        return [long]$Value.Length
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $total = 0L
+        foreach ($item in $Value) {
+            $total += Get-TextFieldChars $item
+        }
+
+        return $total
+    }
+
+    $text = Get-PropValue $Value @("text")
+    if ($null -ne $text) {
+        return Get-TextFieldChars $text
+    }
+
+    $content = Get-PropValue $Value @("content")
+    if ($null -ne $content) {
+        return Get-TextFieldChars $content
+    }
+
+    return 0L
+}
+
 function Get-SourceEstimateFromEntry {
     param([object]$Entry)
 
@@ -600,56 +900,66 @@ function Get-SourceEstimateFromEntry {
     $payloadType = Get-PropValue $payload @("type")
     $source = $null
     $side = $null
-    $value = $null
+    $chars = 0L
+    $attribution = "Field text estimate"
 
     if ($entryType -eq "event_msg" -and $payloadType -eq "user_message") {
         $source = "User input"
         $side = "Input"
-        $value = @(
-            Get-PropValue $payload @("message")
-            Get-PropValue $payload @("text_elements", "textElements")
-        )
+        $chars =
+            (Get-TextFieldChars (Get-PropValue $payload @("message"))) +
+            (Get-TextFieldChars (Get-PropValue $payload @("text_elements", "textElements")))
     }
     elseif ($entryType -eq "response_item" -and $payloadType -eq "message") {
         $role = Get-PropValue $payload @("role")
         if ($role -eq "assistant") {
             $source = "Assistant output"
             $side = "Output"
-            $value = Get-PropValue $payload @("content")
+            $chars = Get-TextFieldChars (Get-PropValue $payload @("content"))
+        }
+        elseif ($role -eq "user") {
+            $source = "User context"
+            $side = "Input"
+            $chars = Get-TextFieldChars (Get-PropValue $payload @("content"))
+        }
+        elseif ($role -eq "developer" -or $role -eq "system") {
+            $source = "System/developer context"
+            $side = "Input"
+            $chars = Get-TextFieldChars (Get-PropValue $payload @("content"))
         }
     }
     elseif ($entryType -eq "response_item" -and ($payloadType -eq "function_call" -or $payloadType -eq "custom_tool_call")) {
         $source = "Tool call arguments"
         $side = "Output"
-        $value = @(
-            Get-PropValue $payload @("name")
-            Get-PropValue $payload @("arguments", "input")
-        )
+        $chars = Get-TextFieldChars (Get-PropValue $payload @("arguments", "input"))
     }
     elseif ($entryType -eq "response_item" -and ($payloadType -eq "function_call_output" -or $payloadType -eq "custom_tool_call_output")) {
         $source = "Tool outputs"
         $side = "Input"
-        $value = Get-PropValue $payload @("output")
+        $chars = Get-TextFieldChars (Get-PropValue $payload @("output"))
     }
     elseif ($entryType -eq "response_item" -and $payloadType -eq "reasoning") {
         $source = "Reasoning"
         $side = "Output"
-        $value = @(
-            Get-PropValue $payload @("summary")
-            Get-PropValue $payload @("content")
-        )
+        $chars =
+            (Get-TextFieldChars (Get-PropValue $payload @("summary"))) +
+            (Get-TextFieldChars (Get-PropValue $payload @("content")))
+        $attribution = "Visible reasoning text estimate"
     }
     elseif (($entryType -eq "response_item" -and $payloadType -eq "summary") -or ($entryType -eq "event_msg" -and $payloadType -eq "context_compacted") -or $entryType -eq "compacted") {
         $source = "Context summaries"
         $side = "Input"
-        $value = $payload
+        $chars =
+            (Get-TextFieldChars (Get-PropValue $payload @("summary"))) +
+            (Get-TextFieldChars (Get-PropValue $payload @("content"))) +
+            (Get-TextFieldChars (Get-PropValue $payload @("message", "text")))
     }
 
     if ([string]::IsNullOrWhiteSpace($source)) {
         return $null
     }
 
-    $tokens = Convert-CharsToEstimatedTokens (Get-EstimatedTextChars $value)
+    $tokens = Convert-CharsToEstimatedTokens $chars
     if ($tokens -le 0) {
         return $null
     }
@@ -658,6 +968,8 @@ function Get-SourceEstimateFromEntry {
         Source = $source
         Side = $side
         Tokens = $tokens
+        Chars = $chars
+        Attribution = $attribution
     }
 }
 
@@ -674,8 +986,9 @@ function New-SourceEstimateBucket {
         Source = $Source
         EstimatedInputTokens = 0L
         EstimatedOutputTokens = 0L
+        EstimatedChars = 0L
         Events = 0
-        Attribution = "Text estimate"
+        Attribution = "Field text estimate"
     }
 }
 
@@ -703,6 +1016,13 @@ function Add-SourceEstimate {
         $Buckets[$key].EstimatedOutputTokens += [long]$Estimate.Tokens
     }
 
+    $Buckets[$key].EstimatedChars += [long]$Estimate.Chars
+    if ($Estimate.Attribution -and $Buckets[$key].Attribution -ne $Estimate.Attribution) {
+        $Buckets[$key].Attribution = "Mixed text estimate"
+    }
+    elseif ($Estimate.Attribution) {
+        $Buckets[$key].Attribution = $Estimate.Attribution
+    }
     $Buckets[$key].Events += 1
 }
 
@@ -728,6 +1048,7 @@ function Get-SourceCostRows {
                 Source = "Unattributed input/context"
                 EstimatedInputTokens = [long]$modelRow.Input - $inputEstimateTotal
                 EstimatedOutputTokens = 0L
+                EstimatedChars = 0L
                 Events = 0
                 Attribution = "Allocated remainder"
             }
@@ -741,6 +1062,7 @@ function Get-SourceCostRows {
                 Source = "Unattributed output"
                 EstimatedInputTokens = 0L
                 EstimatedOutputTokens = [long]$modelRow.Output - $outputEstimateTotal
+                EstimatedChars = 0L
                 Events = 0
                 Attribution = "Allocated remainder"
             }
@@ -748,14 +1070,17 @@ function Get-SourceCostRows {
         }
 
         foreach ($sourceRow in $expandedRows) {
+            $rawInput = [long]$sourceRow.EstimatedInputTokens
+            $rawOutput = [long]$sourceRow.EstimatedOutputTokens
+            $rawTokens = $rawInput + $rawOutput
             $allocatedInput = 0L
             $allocatedOutput = 0L
-            if ($inputEstimateTotal -gt 0 -and [long]$sourceRow.EstimatedInputTokens -gt 0) {
-                $allocatedInput = [long][Math]::Round([double]$modelRow.Input * [double]$sourceRow.EstimatedInputTokens / [double]$inputEstimateTotal)
+            if ($inputEstimateTotal -gt 0 -and $rawInput -gt 0) {
+                $allocatedInput = [long][Math]::Round([double]$modelRow.Input * [double]$rawInput / [double]$inputEstimateTotal)
             }
 
-            if ($outputEstimateTotal -gt 0 -and [long]$sourceRow.EstimatedOutputTokens -gt 0) {
-                $allocatedOutput = [long][Math]::Round([double]$modelRow.Output * [double]$sourceRow.EstimatedOutputTokens / [double]$outputEstimateTotal)
+            if ($outputEstimateTotal -gt 0 -and $rawOutput -gt 0) {
+                $allocatedOutput = [long][Math]::Round([double]$modelRow.Output * [double]$rawOutput / [double]$outputEstimateTotal)
             }
 
             $allocatedCachedInput = 0L
@@ -764,6 +1089,8 @@ function Get-SourceCostRows {
             }
 
             $cost = $null
+            $costUsd = $null
+            $costCredits = $null
             if ($null -ne $pricing) {
                 $uncachedInput = [Math]::Max(0L, $allocatedInput - $allocatedCachedInput)
                 $costValue =
@@ -771,6 +1098,12 @@ function Get-SourceCostRows {
                     ($allocatedCachedInput * [double]$pricing.CachedInputPerMillion / 1000000.0) +
                     ($allocatedOutput * [double]$pricing.OutputPerMillion / 1000000.0)
                 $cost = [Math]::Round($costValue, 4)
+                if ($pricing.Unit -eq "USD") {
+                    $costUsd = $cost
+                }
+                elseif ($pricing.Unit -eq "credits") {
+                    $costCredits = $cost
+                }
             }
 
             $rows += [pscustomobject]@{
@@ -778,14 +1111,23 @@ function Get-SourceCostRows {
                 Model = $sourceRow.Model
                 Source = $sourceRow.Source
                 PricingMode = $PricingMode
+                CostBasisMode = $CostBasisMode
+                CostUnit = if ($null -ne $pricing) { $pricing.Unit } else { $null }
                 PricingBand = $modelRow.PricingBand
                 BillingConfidence = if ($null -eq $pricing) { "Low" } elseif ($sourceRow.Attribution -eq "Allocated remainder") { "Medium" } else { $modelRow.BillingConfidence }
-                EstimatedTokens = [long]$sourceRow.EstimatedInputTokens + [long]$sourceRow.EstimatedOutputTokens
+                EstimatedChars = if ($null -ne $sourceRow.EstimatedChars) { [long]$sourceRow.EstimatedChars } else { 0L }
+                EstimatedInputTokens = $rawInput
+                EstimatedOutputTokens = $rawOutput
+                EstimatedTokens = $rawTokens
                 AllocatedInput = $allocatedInput
                 AllocatedCachedInput = $allocatedCachedInput
                 AllocatedOutput = $allocatedOutput
+                AllocatedTokens = $allocatedInput + $allocatedOutput
+                ReconciliationDelta = ($allocatedInput + $allocatedOutput) - $rawTokens
                 Events = $sourceRow.Events
-                EstimatedCostUsd = $cost
+                EstimatedCost = $cost
+                EstimatedCostUsd = $costUsd
+                EstimatedCostCredits = $costCredits
                 Attribution = $sourceRow.Attribution
             }
         }
@@ -801,6 +1143,19 @@ function Get-TotalEstimatedCostUsd {
     foreach ($row in $Rows) {
         if ($null -ne $row.EstimatedCostUsd) {
             $total += [double]$row.EstimatedCostUsd
+        }
+    }
+
+    return [Math]::Round($total, 4)
+}
+
+function Get-TotalEstimatedCostCredits {
+    param([object[]]$Rows)
+
+    $total = 0.0
+    foreach ($row in $Rows) {
+        if ($null -ne $row.EstimatedCostCredits) {
+            $total += [double]$row.EstimatedCostCredits
         }
     }
 
@@ -833,6 +1188,18 @@ function Get-SessionFiles {
     return @($sortedFiles | Select-Object -First $Limit)
 }
 
+function Get-SessionFilesSince {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [datetime]$SinceUtc
+    )
+
+    return @(Get-SessionFiles -Root $Root -Archived:$Archived -Limit 0 |
+        Where-Object { $_.LastWriteTimeUtc -ge $SinceUtc } |
+        Sort-Object LastWriteTime -Descending)
+}
+
 function Get-SessionLines {
     param(
         [string]$Path,
@@ -844,6 +1211,358 @@ function Get-SessionLines {
     }
 
     return @(Get-Content -LiteralPath $Path -Tail $Tail)
+}
+
+function Get-RateLimitHistoryPath {
+    param([string]$Root)
+
+    return (Join-Path $Root "usage-history\rate_limit_samples.jsonl")
+}
+
+function Convert-ToIsoUtcString {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    try {
+        return ([datetime]$Value).ToUniversalTime().ToString("o")
+    }
+    catch {
+        return [string]$Value
+    }
+}
+
+function Convert-FromHistoryDate {
+    param([object]$Value)
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $null
+    }
+
+    try {
+        return [DateTimeOffset]::Parse([string]$Value).UtcDateTime
+    }
+    catch {
+        return $null
+    }
+}
+
+function Format-RateLimitResetTime {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    try {
+        return ([datetime]$Value).ToString("yyyy-MM-dd HH:mm:ss")
+    }
+    catch {
+        return [string]$Value
+    }
+}
+
+function Get-RateLimitHistoryRows {
+    param(
+        [string]$Root,
+        [int]$Days = $RateLimitHistoryDays
+    )
+
+    $path = Get-RateLimitHistoryPath -Root $Root
+    if (-not (Test-Path -LiteralPath $path)) {
+        return @()
+    }
+
+    $cutoffUtc = [DateTime]::UtcNow.AddDays(-1 * [Math]::Max(1, $Days))
+    $rows = @()
+    foreach ($line in (Get-Content -LiteralPath $path)) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        try {
+            $row = $line | ConvertFrom-Json
+        }
+        catch {
+            continue
+        }
+
+        $sampledAt = Convert-FromHistoryDate (Get-PropValue $row @("sampled_at", "SampledAt"))
+        if ($null -eq $sampledAt -or $sampledAt -lt $cutoffUtc) {
+            continue
+        }
+
+        $rows += [pscustomobject]@{
+            SampledAt = $sampledAt
+            EventTimestamp = Get-PropValue $row @("event_timestamp", "EventTimestamp")
+            PlanType = Get-PropValue $row @("plan_type", "PlanType")
+            Window = Get-PropValue $row @("window", "Window")
+            UsedPercent = [double](Get-PropValue $row @("used_percent", "UsedPercent"))
+            RemainingPercent = [double](Get-PropValue $row @("remaining_percent", "RemainingPercent"))
+            WindowMinutes = Get-PropValue $row @("window_minutes", "WindowMinutes")
+            ResetsAt = Get-PropValue $row @("resets_at", "ResetsAt")
+            Session = Get-PropValue $row @("session", "Session")
+            SourceFile = Get-PropValue $row @("source_file", "SourceFile")
+        }
+    }
+
+    return @($rows | Sort-Object SampledAt)
+}
+
+function Save-RateLimitHistoryRows {
+    param(
+        [string]$Root,
+        [object[]]$Rows
+    )
+
+    $path = Get-RateLimitHistoryPath -Root $Root
+    $directory = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $directory)) {
+        New-Item -ItemType Directory -Path $directory | Out-Null
+    }
+
+    $lines = @(
+        foreach ($row in $Rows) {
+            [pscustomobject]@{
+                sampled_at = Convert-ToIsoUtcString $row.SampledAt
+                event_timestamp = $row.EventTimestamp
+                plan_type = $row.PlanType
+                window = $row.Window
+                used_percent = $row.UsedPercent
+                remaining_percent = $row.RemainingPercent
+                window_minutes = $row.WindowMinutes
+                resets_at = $row.ResetsAt
+                session = $row.Session
+                source_file = $row.SourceFile
+            } | ConvertTo-Json -Compress
+        }
+    )
+
+    Set-Content -LiteralPath $path -Value $lines -Encoding UTF8
+}
+
+function Write-RateLimitHistorySamples {
+    param(
+        [string]$Root,
+        [object]$Snapshot,
+        [int]$RetentionDays = $RateLimitHistoryDays,
+        [int]$SampleSeconds = $RateLimitHistorySampleSeconds
+    )
+
+    if ($DisableRateLimitHistory -or $null -eq $Snapshot -or $Snapshot.RateLimitRows.Count -eq 0) {
+        return
+    }
+
+    $nowUtc = [DateTime]::UtcNow
+    $rows = @(Get-RateLimitHistoryRows -Root $Root -Days $RetentionDays)
+    $changed = $false
+
+    foreach ($rateRow in $Snapshot.RateLimitRows) {
+        $currentResetsAt = Format-RateLimitResetTime $rateRow.ResetsAt
+        $last = @($rows | Where-Object { $_.Window -eq $rateRow.Window } | Sort-Object SampledAt -Descending | Select-Object -First 1)
+        $shouldAppend = $true
+        if ($last.Count -gt 0) {
+            $lastRow = $last[0]
+            $ageSeconds = ($nowUtc - [datetime]$lastRow.SampledAt).TotalSeconds
+            $sameUsed = [Math]::Abs([double]$lastRow.UsedPercent - [double]$rateRow.UsedPercent) -lt 0.01
+            $sameReset = [string]$lastRow.ResetsAt -eq [string]$currentResetsAt
+            $shouldAppend = -not ($sameUsed -and $sameReset -and $ageSeconds -lt [Math]::Max(1, $SampleSeconds))
+        }
+
+        if (-not $shouldAppend) {
+            continue
+        }
+
+        $rows += [pscustomobject]@{
+            SampledAt = $nowUtc
+            EventTimestamp = $Snapshot.Timestamp
+            PlanType = $Snapshot.PlanType
+            Window = $rateRow.Window
+            UsedPercent = $rateRow.UsedPercent
+            RemainingPercent = $rateRow.RemainingPercent
+            WindowMinutes = $rateRow.WindowMinutes
+            ResetsAt = $currentResetsAt
+            Session = $Snapshot.Session
+            SourceFile = $Snapshot.SourceFile
+        }
+        $changed = $true
+    }
+
+    if ($changed) {
+        Save-RateLimitHistoryRows -Root $Root -Rows @(Compress-RateLimitHistoryRows -Rows $rows -SampleSeconds $SampleSeconds)
+    }
+}
+
+function Get-RateLimitHistorySummary {
+    param([object[]]$Rows)
+
+    $summary = @()
+    foreach ($window in @("5 hour", "1 week")) {
+        $windowRows = @($Rows | Where-Object { $_.Window -eq $window } | Sort-Object SampledAt)
+        if ($windowRows.Count -eq 0) {
+            continue
+        }
+
+        $latest = $windowRows[-1]
+        $peak = ($windowRows | Measure-Object -Property UsedPercent -Maximum).Maximum
+        $average = ($windowRows | Measure-Object -Property UsedPercent -Average).Average
+        $resetCount = @($windowRows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.ResetsAt) } | Select-Object -ExpandProperty ResetsAt -Unique).Count
+
+        $summary += [pscustomobject]@{
+            Window = $window
+            LatestUsedPercent = [Math]::Round([double]$latest.UsedPercent, 2)
+            PeakUsedPercent = [Math]::Round([double]$peak, 2)
+            AverageUsedPercent = [Math]::Round([double]$average, 2)
+            Samples = $windowRows.Count
+            ResetCount = $resetCount
+            FirstSampledAt = $windowRows[0].SampledAt
+            LastSampledAt = $latest.SampledAt
+        }
+    }
+
+    return @($summary)
+}
+
+function Compress-RateLimitHistoryRows {
+    param(
+        [object[]]$Rows,
+        [int]$SampleSeconds = $RateLimitHistorySampleSeconds
+    )
+
+    $kept = @()
+    foreach ($row in @($Rows | Sort-Object SampledAt, Window)) {
+        $last = @($kept |
+            Where-Object { $_.Window -eq $row.Window } |
+            Sort-Object SampledAt -Descending |
+            Select-Object -First 1)
+
+        if ($last.Count -gt 0) {
+            $lastRow = $last[0]
+            $ageSeconds = ([datetime]$row.SampledAt - [datetime]$lastRow.SampledAt).TotalSeconds
+            $sameUsed = [Math]::Abs([double]$lastRow.UsedPercent - [double]$row.UsedPercent) -lt 0.01
+            $sameReset = [string]$lastRow.ResetsAt -eq [string]$row.ResetsAt
+            if ($sameUsed -and $sameReset -and $ageSeconds -ge 0 -and $ageSeconds -lt [Math]::Max(1, $SampleSeconds)) {
+                continue
+            }
+        }
+
+        $kept += $row
+    }
+
+    return @($kept)
+}
+
+function New-RateLimitHistoryRow {
+    param(
+        [datetime]$SampledAt,
+        [object]$EventTimestamp,
+        [object]$PlanType,
+        [object]$RateRow,
+        [string]$Session,
+        [string]$SourceFile
+    )
+
+    [pscustomobject]@{
+        SampledAt = $SampledAt
+        EventTimestamp = $EventTimestamp
+        PlanType = $PlanType
+        Window = $RateRow.Window
+        UsedPercent = $RateRow.UsedPercent
+        RemainingPercent = $RateRow.RemainingPercent
+        WindowMinutes = $RateRow.WindowMinutes
+        ResetsAt = Format-RateLimitResetTime $RateRow.ResetsAt
+        Session = $Session
+        SourceFile = $SourceFile
+    }
+}
+
+function Get-RateLimitHistoryRowsFromSessions {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Days = $RateLimitHistoryDays
+    )
+
+    $cutoffUtc = [DateTime]::UtcNow.AddDays(-1 * [Math]::Max(1, $Days))
+    $rows = @()
+
+    foreach ($file in (Get-SessionFilesSince -Root $Root -Archived:$Archived -SinceUtc $cutoffUtc)) {
+        $session = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+        foreach ($line in (Get-SessionLines -Path $file.FullName -Tail 0)) {
+            if ($line -notlike '*"rate_limits"*' -and
+                $line -notlike '*"rateLimitStatus"*' -and
+                $line -notlike '*"rate_limit_status"*') {
+                continue
+            }
+
+            try {
+                $entry = $line | ConvertFrom-Json
+            }
+            catch {
+                continue
+            }
+
+            $eventTime = Get-EventTime $entry
+            if ($null -eq $eventTime -or $eventTime -lt $cutoffUtc) {
+                continue
+            }
+
+            $payload = Get-PropValue $entry @("payload")
+            if ($null -eq $payload) {
+                continue
+            }
+
+            $rateLimits = Get-PropValue $payload @("rate_limits", "rateLimitStatus", "rate_limit_status")
+            if ($null -eq $rateLimits) {
+                continue
+            }
+
+            $planType = Get-PropValue $rateLimits @("plan_type", "planType")
+            foreach ($rateRow in @(Convert-RateLimits $rateLimits)) {
+                $rows += New-RateLimitHistoryRow `
+                    -SampledAt $eventTime `
+                    -EventTimestamp (Get-PropValue $entry @("timestamp")) `
+                    -PlanType $planType `
+                    -RateRow $rateRow `
+                    -Session $session `
+                    -SourceFile $file.FullName
+            }
+        }
+    }
+
+    return @($rows)
+}
+
+function Import-RateLimitHistoryFromSessions {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Days = $RateLimitHistoryDays,
+        [int]$SampleSeconds = $RateLimitHistorySampleSeconds
+    )
+
+    if ($DisableRateLimitHistory) {
+        return [pscustomobject]@{
+            Imported = 0
+            Saved = 0
+            Path = Get-RateLimitHistoryPath -Root $Root
+            Disabled = $true
+        }
+    }
+
+    $existingRows = @(Get-RateLimitHistoryRows -Root $Root -Days $Days)
+    $backfillRows = @(Get-RateLimitHistoryRowsFromSessions -Root $Root -Archived:$Archived -Days $Days)
+    $mergedRows = @(Compress-RateLimitHistoryRows -Rows @($existingRows + $backfillRows) -SampleSeconds $SampleSeconds)
+    Save-RateLimitHistoryRows -Root $Root -Rows $mergedRows
+
+    return [pscustomobject]@{
+        Imported = $backfillRows.Count
+        Saved = $mergedRows.Count
+        Path = Get-RateLimitHistoryPath -Root $Root
+        Disabled = $false
+    }
 }
 
 function Get-LatestPlanType {
@@ -901,42 +1620,9 @@ function Get-RollingTokenUsage {
             continue
         }
 
-        $previousTotal = $null
-        $lines = @(Get-SessionLines -Path $file.FullName -Tail $Tail)
-
-        for ($index = 0; $index -lt $lines.Count; $index++) {
-            $line = $lines[$index]
-            if ($line -notlike '*"total_token_usage"*') {
-                continue
-            }
-
-            $eventTime = Get-JsonLineEventTime $line
-            if ($null -eq $eventTime) {
-                continue
-            }
-
-            $currentTotal = Get-UsageMetricsFromJsonLine $line "total_token_usage"
-            if ($null -eq $currentTotal) {
-                continue
-            }
-
-            if (Test-SameMetrics $previousTotal $currentTotal) {
-                continue
-            }
-
-            $delta = Get-PositiveDeltaMetrics $previousTotal $currentTotal
-            if ($null -eq $delta) {
-                $lastMetrics = Get-UsageMetricsFromJsonLine $line "last_token_usage"
-                if ($null -ne $lastMetrics -and (Test-SameMetrics $currentTotal $lastMetrics)) {
-                    $delta = $lastMetrics
-                }
-            }
-
-            $previousTotal = $currentTotal
-
-            if ($null -eq $delta) {
-                continue
-            }
+        foreach ($usageEvent in (Get-SessionUsageDeltas -Path $file.FullName -Tail $Tail)) {
+            $eventTime = $usageEvent.Timestamp
+            $delta = $usageEvent.Metrics
 
             if ($eventTime -ge $weekCutoff) {
                 Add-TokenMetrics $week $delta
@@ -977,51 +1663,14 @@ function Get-TokenUsageByModel {
             continue
         }
 
-        $currentModel = Get-SessionInitialModel $file.FullName
-        $previousTotal = $null
-        $lines = @(Get-SessionLines -Path $file.FullName -Tail $Tail)
-
-        for ($index = 0; $index -lt $lines.Count; $index++) {
-            $line = $lines[$index]
-
-            if ($line -like '*"turn_context"*') {
-                $model = Get-JsonStringFromLine $line "model"
-                if (-not [string]::IsNullOrWhiteSpace($model)) {
-                    $currentModel = $model
-                }
-            }
-
-            if ($line -notlike '*"total_token_usage"*') {
-                continue
-            }
-
-            $eventTime = Get-JsonLineEventTime $line
+        foreach ($usageEvent in (Get-SessionUsageDeltas -Path $file.FullName -Tail $Tail)) {
+            $eventTime = $usageEvent.Timestamp
             if ($null -eq $eventTime -or $eventTime -lt $oldestStart) {
                 continue
             }
 
-            $currentTotal = Get-UsageMetricsFromJsonLine $line "total_token_usage"
-            if ($null -eq $currentTotal) {
-                continue
-            }
-
-            if (Test-SameMetrics $previousTotal $currentTotal) {
-                continue
-            }
-
-            $delta = Get-PositiveDeltaMetrics $previousTotal $currentTotal
-            if ($null -eq $delta) {
-                $lastMetrics = Get-UsageMetricsFromJsonLine $line "last_token_usage"
-                if ($null -ne $lastMetrics -and (Test-SameMetrics $currentTotal $lastMetrics)) {
-                    $delta = $lastMetrics
-                }
-            }
-
-            $previousTotal = $currentTotal
-
-            if ($null -eq $delta) {
-                continue
-            }
+            $delta = $usageEvent.Metrics
+            $currentModel = $usageEvent.Model
 
             foreach ($window in $windows) {
                 if ($eventTime -lt $window.StartUtc) {
@@ -1044,6 +1693,67 @@ function Get-TokenUsageByModel {
     }
 
     return @($buckets.Values | Sort-Object Window, Model)
+}
+
+function Get-TokenUsageByModelPeriod {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Limit,
+        [int]$Tail,
+        [object[]]$Windows
+    )
+
+    if ($Windows.Count -eq 0) {
+        return @()
+    }
+
+    $oldestStart = ($Windows | Sort-Object StartUtc | Select-Object -First 1).StartUtc
+    $newestEnd = ($Windows | Sort-Object EndUtc -Descending | Select-Object -First 1).EndUtc
+    $buckets = @{}
+
+    foreach ($file in (Get-SessionFiles -Root $Root -Archived:$Archived -Limit $Limit)) {
+        if ($file.LastWriteTimeUtc -lt $oldestStart) {
+            continue
+        }
+
+        foreach ($usageEvent in (Get-SessionUsageDeltas -Path $file.FullName -Tail $Tail)) {
+            $eventTime = $usageEvent.Timestamp
+            if ($null -eq $eventTime -or $eventTime -lt $oldestStart -or $eventTime -ge $newestEnd) {
+                continue
+            }
+
+            $delta = $usageEvent.Metrics
+            $currentModel = $usageEvent.Model
+
+            foreach ($window in $Windows) {
+                if ($eventTime -lt $window.StartUtc -or $eventTime -ge $window.EndUtc) {
+                    continue
+                }
+
+                $pricingBand = Get-PricingBand -Model $currentModel -InputTokens ([long]$delta.Input)
+                $key = "{0}|{1}|{2}" -f $window.Name, $currentModel, $pricingBand
+                if (-not $buckets.ContainsKey($key)) {
+                    $bucket = New-TokenBucket $window.Group $currentModel $pricingBand
+                    $bucket | Add-Member -NotePropertyName PeriodGroup -NotePropertyValue $window.Group
+                    $bucket | Add-Member -NotePropertyName PeriodName -NotePropertyValue $window.Name
+                    $bucket | Add-Member -NotePropertyName PeriodLabel -NotePropertyValue $window.Label
+                    $bucket | Add-Member -NotePropertyName PeriodStartUtc -NotePropertyValue $window.StartUtc
+                    $bucket | Add-Member -NotePropertyName PeriodEndUtc -NotePropertyValue $window.EndUtc
+                    $bucket | Add-Member -NotePropertyName PeriodSortOrder -NotePropertyValue $window.SortOrder
+                    $buckets[$key] = $bucket
+                }
+
+                Add-TokenMetrics $buckets[$key] $delta
+            }
+        }
+    }
+
+    foreach ($bucket in $buckets.Values) {
+        Set-EstimatedCost $bucket
+    }
+
+    return @($buckets.Values | Sort-Object PeriodGroup, PeriodSortOrder, Model)
 }
 
 function Get-TokenSourceCostEstimates {
@@ -1166,22 +1876,103 @@ function Get-CachedTokenUsageByModel {
     return @($rows)
 }
 
-function Get-LatestCodexUsageSnapshot {
+function Get-CachedTokenUsageByModelPeriods {
     param(
         [string]$Root,
         [switch]$Archived,
         [int]$Limit,
         [int]$Tail,
-        [switch]$ForceCostRefresh
+        [switch]$Force
     )
 
-    foreach ($file in (Get-SessionFiles -Root $Root -Archived:$Archived -Limit $Limit)) {
-        $lines = @(Get-Content -LiteralPath $file.FullName -Tail $Tail)
+    $now = Get-Date
+    $windows = @(Get-ModelPeriodWindowDefinitions)
+    $groups = @($windows | Select-Object -ExpandProperty Group -Unique)
+    $dueGroups = @()
+
+    foreach ($group in $groups) {
+        $groupWindows = @($windows | Where-Object { $_.Group -eq $group })
+        $refreshSeconds = ($groupWindows | Select-Object -First 1).RefreshSeconds
+        $cache = $script:CostPeriodCache[$group]
+        $isDue = $Force -or $null -eq $cache
+        if (-not $isDue) {
+            $ageSeconds = ($now - [datetime]$cache.UpdatedAt).TotalSeconds
+            $isDue = $ageSeconds -ge [double]$refreshSeconds
+        }
+
+        if ($isDue) {
+            $dueGroups += $group
+        }
+    }
+
+    if ($dueGroups.Count -gt 0) {
+        $dueWindows = @($windows | Where-Object { $dueGroups -contains $_.Group })
+        $freshRows = @(Get-TokenUsageByModelPeriod -Root $Root -Archived:$Archived -Limit $Limit -Tail $Tail -Windows $dueWindows)
+        foreach ($group in $dueGroups) {
+            $script:CostPeriodCache[$group] = [pscustomobject]@{
+                UpdatedAt = $now
+                Rows = @($freshRows | Where-Object { $_.PeriodGroup -eq $group })
+            }
+        }
+    }
+
+    $rows = @()
+    foreach ($group in $groups) {
+        $cache = $script:CostPeriodCache[$group]
+        if ($null -ne $cache) {
+            $rows += $cache.Rows
+        }
+    }
+
+    return @($rows)
+}
+
+function New-ConversationUsageMatch {
+    param(
+        [object]$Entry,
+        [object]$File,
+        [object]$RateLimits,
+        [object]$Info,
+        [object]$TotalUsage,
+        [object]$LastUsage,
+        [object]$ContextWindow
+    )
+
+    [pscustomobject]@{
+        Entry = $Entry
+        Timestamp = Get-EventTime $Entry
+        SourceFile = $File.FullName
+        Session = [System.IO.Path]::GetFileNameWithoutExtension($File.Name)
+        RateLimits = $RateLimits
+        Info = $Info
+        TotalUsage = $TotalUsage
+        LastUsage = $LastUsage
+        ContextWindow = $ContextWindow
+    }
+}
+
+function Get-LatestConversationUsageMatches {
+    param(
+        [object[]]$Files,
+        [int]$Tail,
+        [datetime]$SinceUtc = [DateTime]::MinValue
+    )
+
+    $latestUsage = $null
+    $latestRateLimit = $null
+
+    foreach ($file in $Files) {
+        $lines = @(Get-SessionLines -Path $file.FullName -Tail $Tail)
         for ($index = $lines.Count - 1; $index -ge 0; $index--) {
             try {
                 $entry = $lines[$index] | ConvertFrom-Json
             }
             catch {
+                continue
+            }
+
+            $eventTime = Get-EventTime $entry
+            if ($SinceUtc -ne [DateTime]::MinValue -and $null -ne $eventTime -and $eventTime -lt $SinceUtc) {
                 continue
             }
 
@@ -1200,33 +1991,134 @@ function Get-LatestCodexUsageSnapshot {
                 continue
             }
 
-            $modelRows = @(Get-CachedTokenUsageByModel -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -Force:$ForceCostRefresh)
+            $match = New-ConversationUsageMatch `
+                -Entry $entry `
+                -File $file `
+                -RateLimits $rateLimits `
+                -Info $info `
+                -TotalUsage $totalUsage `
+                -LastUsage $lastUsage `
+                -ContextWindow $contextWindow
 
-            return [pscustomobject]@{
-                Timestamp = Get-PropValue $entry @("timestamp")
-                SourceFile = $file.FullName
-                Session = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
-                PlanType = if (Get-PropValue $rateLimits @("plan_type", "planType")) {
-                    Get-PropValue $rateLimits @("plan_type", "planType")
-                }
-                else {
-                    Get-LatestPlanType -Root $Root -Archived:$Archived -Limit $Limit -Tail $Tail
-                }
-                RateLimitRows = @(Convert-RateLimits $rateLimits)
-                RollingTokenRows = @(Get-RollingTokenUsage -Root $Root -Archived:$Archived -Limit $RollingMaxFiles -Tail $RollingTailLines)
-                ModelTokenRows = $modelRows
-                SourceCostRows = @(Get-TokenSourceCostEstimates -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -ModelRows $modelRows)
-                CostBasis = "API-equivalent estimate for ChatGPT/Codex subscription usage"
-                PricingMode = $PricingMode
-                PricingSource = "https://developers.openai.com/api/docs/pricing"
-                RegionalUpliftApplied = $false
-                TokenRows = @(
-                    Convert-TokenUsage "Conversation total" $totalUsage
-                    Convert-TokenUsage "Last update" $lastUsage
-                ) | Where-Object { $null -ne $_ }
-                ContextWindow = $contextWindow
+            if (($null -ne $totalUsage -or $null -ne $lastUsage) -and
+                ($null -eq $latestUsage -or $match.Timestamp -ge $latestUsage.Timestamp)) {
+                $latestUsage = $match
+            }
+
+            if ($null -ne $rateLimits -and
+                ($null -eq $latestRateLimit -or $match.Timestamp -ge $latestRateLimit.Timestamp)) {
+                $latestRateLimit = $match
             }
         }
+    }
+
+    [pscustomobject]@{
+        Usage = $latestUsage
+        RateLimit = $latestRateLimit
+    }
+}
+
+function Get-LatestCodexUsageSnapshot {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Limit,
+        [int]$Tail,
+        [int]$ConversationLookbackHours = $script:ConversationLookbackHours,
+        [int]$ConversationFallbackLookbackDays = $script:ConversationFallbackLookbackDays,
+        [int]$ConversationFallbackMaxFiles = $script:ConversationFallbackMaxFiles,
+        [int]$ConversationFallbackTailLines = $script:ConversationFallbackTailLines,
+        [switch]$ForceCostRefresh
+    )
+
+    $nowUtc = [DateTime]::UtcNow
+    $searches = @()
+    if ($ConversationLookbackHours -gt 0) {
+        $sinceUtc = $nowUtc.AddHours(-1 * $ConversationLookbackHours)
+        $searches += [pscustomobject]@{
+            Files = @(Get-SessionFilesSince -Root $Root -Archived:$Archived -SinceUtc $sinceUtc)
+            Tail = 0
+            SinceUtc = $sinceUtc
+        }
+    }
+
+    if ($ConversationFallbackLookbackDays -gt 0) {
+        $sinceUtc = $nowUtc.AddDays(-1 * $ConversationFallbackLookbackDays)
+        $searches += [pscustomobject]@{
+            Files = @(Get-SessionFilesSince -Root $Root -Archived:$Archived -SinceUtc $sinceUtc)
+            Tail = 0
+            SinceUtc = $sinceUtc
+        }
+    }
+
+    $legacyLimit = if ($ConversationFallbackMaxFiles -gt 0) { $ConversationFallbackMaxFiles } else { $Limit }
+    $legacyTail = if ($ConversationFallbackTailLines -gt 0) { $ConversationFallbackTailLines } else { $Tail }
+    $searches += [pscustomobject]@{
+        Files = @(Get-SessionFiles -Root $Root -Archived:$Archived -Limit $legacyLimit)
+        Tail = $legacyTail
+        SinceUtc = [DateTime]::MinValue
+    }
+
+    foreach ($search in $searches) {
+        if ($search.Files.Count -eq 0) {
+            continue
+        }
+
+        $matches = Get-LatestConversationUsageMatches -Files $search.Files -Tail $search.Tail -SinceUtc $search.SinceUtc
+        $usageMatch = $matches.Usage
+        $rateLimitMatch = $matches.RateLimit
+        $sourceMatch = if ($null -ne $usageMatch) { $usageMatch } else { $rateLimitMatch }
+
+        if ($null -eq $sourceMatch) {
+            continue
+        }
+
+        $rateLimits = if ($null -ne $rateLimitMatch) { $rateLimitMatch.RateLimits } else { $usageMatch.RateLimits }
+        $modelRows = @(Get-CachedTokenUsageByModel -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -Force:$ForceCostRefresh)
+        $modelPeriodRows = @(Get-CachedTokenUsageByModelPeriods -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -Force:$ForceCostRefresh)
+        $modelPeriodWindows = @(Get-ModelPeriodWindowDefinitions)
+
+        $snapshot = [pscustomobject]@{
+            Timestamp = Get-PropValue $sourceMatch.Entry @("timestamp")
+            SourceFile = $sourceMatch.SourceFile
+            Session = $sourceMatch.Session
+            PlanType = if (Get-PropValue $rateLimits @("plan_type", "planType")) {
+                Get-PropValue $rateLimits @("plan_type", "planType")
+            }
+            else {
+                Get-LatestPlanType -Root $Root -Archived:$Archived -Limit $legacyLimit -Tail $legacyTail
+            }
+            RateLimitRows = @(Convert-RateLimits $rateLimits)
+            RollingTokenRows = @(Get-RollingTokenUsage -Root $Root -Archived:$Archived -Limit $RollingMaxFiles -Tail $RollingTailLines)
+            ModelTokenRows = $modelRows
+            ModelTokenPeriodRows = $modelPeriodRows
+            ModelTokenPeriodWindows = $modelPeriodWindows
+            SourceCostRows = @(Get-TokenSourceCostEstimates -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -ModelRows $modelRows)
+            CostBasis = if ($CostBasisMode -eq "CodexCredits") { "Codex credit equivalent for paid/extra usage" } else { "API-equivalent USD estimate for ChatGPT/Codex subscription usage" }
+            CostBasisMode = $CostBasisMode
+            PricingMode = $PricingMode
+            PricingSource = if ($CostBasisMode -eq "CodexCredits") { "https://help.openai.com/en/articles/20001106-codex-rate-card" } else { "https://openai.com/api/pricing/" }
+            RegionalUpliftApplied = $false
+            TokenRows = if ($null -ne $usageMatch) {
+                @(
+                    Convert-TokenUsage "Conversation total" $usageMatch.TotalUsage
+                    Convert-TokenUsage "Last update" $usageMatch.LastUsage
+                ) | Where-Object { $null -ne $_ }
+            }
+            else {
+                @()
+            }
+            ContextWindow = if ($null -ne $usageMatch) { $usageMatch.ContextWindow } else { $null }
+        }
+
+        Write-RateLimitHistorySamples -Root $Root -Snapshot $snapshot
+        $rateLimitHistoryRows = @(Get-RateLimitHistoryRows -Root $Root -Days $RateLimitHistoryDays)
+        $snapshot | Add-Member -NotePropertyName RateLimitHistoryRows -NotePropertyValue $rateLimitHistoryRows
+        $snapshot | Add-Member -NotePropertyName RateLimitHistorySummaryRows -NotePropertyValue @(Get-RateLimitHistorySummary -Rows $rateLimitHistoryRows)
+        $snapshot | Add-Member -NotePropertyName RateLimitHistoryDays -NotePropertyValue $RateLimitHistoryDays
+        $snapshot | Add-Member -NotePropertyName RateLimitHistorySampleSeconds -NotePropertyValue $RateLimitHistorySampleSeconds
+
+        return $snapshot
     }
 
     return $null
@@ -1256,6 +2148,13 @@ function Show-Snapshot {
         $Snapshot.RateLimitRows |
             Select-Object Window, UsedPercent, RemainingPercent, WindowMinutes, ResetsAt |
             Format-Table -AutoSize
+
+        if ($Snapshot.PSObject.Properties["RateLimitHistorySummaryRows"] -and $Snapshot.RateLimitHistorySummaryRows.Count -gt 0) {
+            Write-Host ("Rate-limit history, last {0} days" -f $Snapshot.RateLimitHistoryDays)
+            $Snapshot.RateLimitHistorySummaryRows |
+                Select-Object Window, LatestUsedPercent, PeakUsedPercent, AverageUsedPercent, Samples, ResetCount, FirstSampledAt, LastSampledAt |
+                Format-Table -AutoSize
+        }
     }
     else {
         Write-Host "Rate limits: no rate-limit payload in latest usage event."
@@ -1279,20 +2178,31 @@ function Show-Snapshot {
 
             Write-Host $windowName
             $windowRows |
-                Select-Object Model, PricingBand, PricingMode, BillingConfidence, Total, Input, CachedInput, Output, Reasoning, Events, EstimatedCostUsd |
+                Select-Object Model, PricingBand, PricingMode, CostUnit, BillingConfidence, Total, Input, CachedInput, Output, Reasoning, Events, EstimatedCost, EstimatedCostUsd, EstimatedCostCredits |
                 Format-Table -AutoSize
 
             $totalCostUsd = Get-TotalEstimatedCostUsd $windowRows
-            $totalCostSgd = [Math]::Round($totalCostUsd * $UsdToSgdRate, 4)
-            Write-Host ("totalCostUsd: {0:N4}" -f $totalCostUsd)
-            Write-Host ("totalCostSgd: {0:N4}" -f $totalCostSgd)
+            $totalCostCredits = Get-TotalEstimatedCostCredits $windowRows
+            if ($CostBasisMode -eq "CodexCredits") {
+                Write-Host ("totalCostCredits: {0:N4}" -f $totalCostCredits)
+            }
+            else {
+                $totalCostSgd = [Math]::Round($totalCostUsd * $UsdToSgdRate, 4)
+                Write-Host ("totalCostUsd: {0:N4}" -f $totalCostUsd)
+                Write-Host ("totalCostSgd: {0:N4}" -f $totalCostSgd)
+            }
             Write-Host ""
         }
 
-        Write-Host ("Cost basis: API-equivalent estimate for ChatGPT/Codex subscription usage; pricing mode: {0}." -f $PricingMode)
-        Write-Host "Pricing source: https://developers.openai.com/api/docs/pricing (reasoning tokens are shown separately and not double-counted)."
-        Write-Host ("SGD conversion: 1 USD = {0} SGD. Override with -UsdToSgdRate if needed." -f $UsdToSgdRate)
-        Write-Host "Regional uplift: not applied."
+        Write-Host ("Cost basis: {0}; pricing mode: {1}." -f $Snapshot.CostBasis, $PricingMode)
+        Write-Host ("Pricing source: {0} (reasoning tokens are shown separately and not double-counted)." -f $Snapshot.PricingSource)
+        if ($CostBasisMode -eq "CodexCredits") {
+            Write-Host "SGD conversion: not applied to Codex credits."
+        }
+        else {
+            Write-Host ("SGD conversion: 1 USD = {0} SGD. Override with -UsdToSgdRate if needed." -f $UsdToSgdRate)
+            Write-Host "Regional uplift: not applied."
+        }
         Write-Host ""
     }
 
@@ -1318,8 +2228,23 @@ function Show-Snapshot {
     }
 }
 
+if ($BackfillRateLimitHistory) {
+    $backfill = Import-RateLimitHistoryFromSessions `
+        -Root $CodexHome `
+        -Archived:$IncludeArchived `
+        -Days $RateLimitHistoryDays `
+        -SampleSeconds $RateLimitHistorySampleSeconds
+
+    Write-Host ("Rate-limit history backfill imported {0} observed rows and saved {1} compressed samples." -f $backfill.Imported, $backfill.Saved)
+    Write-Host ("History file: {0}" -f $backfill.Path)
+
+    if ($Once) {
+        return
+    }
+}
+
 if (-not $LibraryOnly -and -not $Console -and -not $Once) {
-    $dashboardScript = Join-Path $env:USERPROFILE ".codex\tools\codex_usage_dashboard.ps1"
+    $dashboardScript = Join-Path $PSScriptRoot "codex_usage_dashboard.ps1"
     if (-not (Test-Path -LiteralPath $dashboardScript)) {
         throw "Dashboard script not found: $dashboardScript"
     }
@@ -1330,6 +2255,10 @@ if (-not $LibraryOnly -and -not $Console -and -not $Once) {
         -Port $DashboardPort `
         -MaxFiles $MaxFiles `
         -TailLines $TailLines `
+        -ConversationLookbackHours $ConversationLookbackHours `
+        -ConversationFallbackLookbackDays $ConversationFallbackLookbackDays `
+        -ConversationFallbackMaxFiles $ConversationFallbackMaxFiles `
+        -ConversationFallbackTailLines $ConversationFallbackTailLines `
         -RollingMaxFiles $RollingMaxFiles `
         -RollingTailLines $RollingTailLines `
         -CostMaxFiles $CostMaxFiles `
@@ -1337,16 +2266,29 @@ if (-not $LibraryOnly -and -not $Console -and -not $Once) {
         -CostFiveHourRefreshSeconds $CostFiveHourRefreshSeconds `
         -CostWeekRefreshSeconds $CostWeekRefreshSeconds `
         -CostMonthRefreshSeconds $CostMonthRefreshSeconds `
+        -RateLimitHistoryDays $RateLimitHistoryDays `
+        -RateLimitHistorySampleSeconds $RateLimitHistorySampleSeconds `
         -UsdToSgdRate $UsdToSgdRate `
+        -CostBasisMode $CostBasisMode `
         -PricingMode $PricingMode `
         -IncludeArchived:$IncludeArchived `
-        -NoOpen:$NoOpen
+        -NoOpen:$NoOpen `
+        -DisableRateLimitHistory:$DisableRateLimitHistory
     return
 }
 
 if (-not $LibraryOnly) {
     do {
-        $snapshot = Get-LatestCodexUsageSnapshot -Root $CodexHome -Archived:$IncludeArchived -Limit $MaxFiles -Tail $TailLines -ForceCostRefresh:$Once
+        $snapshot = Get-LatestCodexUsageSnapshot `
+            -Root $CodexHome `
+            -Archived:$IncludeArchived `
+            -Limit $MaxFiles `
+            -Tail $TailLines `
+            -ConversationLookbackHours $ConversationLookbackHours `
+            -ConversationFallbackLookbackDays $ConversationFallbackLookbackDays `
+            -ConversationFallbackMaxFiles $ConversationFallbackMaxFiles `
+            -ConversationFallbackTailLines $ConversationFallbackTailLines `
+            -ForceCostRefresh:$Once
         Show-Snapshot $snapshot
 
         if ($Once) {

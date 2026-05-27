@@ -1,0 +1,3 @@
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'SilentlyContinue'; $targets = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine -like '*codex_usage_monitor.ps1*' -or $_.CommandLine -like '*codex_usage_dashboard.ps1*') } | Select-Object -ExpandProperty ProcessId); $ports = @(Get-NetTCPConnection -LocalPort 8787 -State Listen | Select-Object -ExpandProperty OwningProcess); $ids = @($targets + $ports) | Where-Object { $_ -and $_ -ne $PID } | Sort-Object -Unique; if ($ids.Count -eq 0) { Write-Host 'Codex usage monitor is not running.'; exit 0 }; foreach ($id in $ids) { Stop-Process -Id $id -Force }; Write-Host ('Stopped Codex usage monitor process(es): {0}' -f ($ids -join ', '))"
+pause
