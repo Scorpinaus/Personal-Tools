@@ -466,7 +466,7 @@
       }
 
       source.textContent = `Session: ${row.Session || ""} | Source: ${row.SourceFile || ""}`;
-      return table(row.TokenRows, [
+      const summary = table(row.TokenRows, [
         { key: "Scope", label: "Scope" },
         { key: "Total", label: "Total", number: true },
         { key: "Input", label: "Total input", number: true },
@@ -475,6 +475,19 @@
         { key: "Output", label: "Output", number: true },
         { key: "Reasoning", label: "Reasoning", number: true }
       ]);
+
+      const turns = table(row.TurnTokenRows, [
+        { key: "Turn", label: "Turn", number: true },
+        { key: "Timestamp", label: "Timestamp", date: true },
+        { key: "Model", label: "Model" },
+        { key: "Input", label: "Total input", number: true },
+        { key: "NonCachedInput", label: "Non-cached input", number: true },
+        { key: "CachedInput", label: "Cached input", number: true },
+        { key: "Output", label: "Output", number: true },
+        { key: "Reasoning", label: "Reasoning", number: true }
+      ]);
+
+      return `${summary}<h3>Turn Breakdown</h3>${turns}`;
     }
 
     function setConversationTab(tabId) {

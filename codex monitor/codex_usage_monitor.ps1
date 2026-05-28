@@ -1986,6 +1986,38 @@ function Convert-ConversationUsageRows {
     ) | Where-Object { $null -ne $_ }
 }
 
+function Get-ConversationTurnTokenRows {
+    param([string]$Path)
+
+    $turn = 0
+    return @(
+        foreach ($row in @(Get-SessionUsageDeltas -Path $Path -Tail 0)) {
+            $metrics = $row.Metrics
+            if ($null -eq $metrics) {
+                continue
+            }
+
+            $turn += 1
+            $model = $row.Model
+            if ([string]::IsNullOrWhiteSpace([string]$model)) {
+                $model = "unknown"
+            }
+
+            [pscustomobject]@{
+                Turn = $turn
+                Timestamp = $row.Timestamp
+                Model = $model
+                Total = $metrics.Total
+                Input = $metrics.Input
+                CachedInput = $metrics.CachedInput
+                NonCachedInput = [Math]::Max(0L, [long]$metrics.Input - [long]$metrics.CachedInput)
+                Output = $metrics.Output
+                Reasoning = $metrics.Reasoning
+            }
+        }
+    )
+}
+
 function Get-LatestConversationUsageMatches {
     param(
         [object[]]$Files,
@@ -2068,6 +2100,7 @@ function Get-ConversationOverviewRows {
                 LastModified = $file.LastWriteTime
                 SourceFile = $file.FullName
                 TokenRows = @(Convert-ConversationUsageRows $usageMatch)
+                TurnTokenRows = @(Get-ConversationTurnTokenRows -Path $file.FullName)
                 ContextWindow = if ($null -ne $usageMatch) { $usageMatch.ContextWindow } else { $null }
                 LatestUsageTimestamp = if ($null -ne $usageMatch) { $usageMatch.Timestamp } else { $null }
             }

@@ -202,6 +202,30 @@ function Convert-SnapshotForJson {
         )
     }
 
+    function Copy-TurnRowsForJson {
+        param([object[]]$Rows)
+
+        @(
+            foreach ($row in @(Copy-RowWithInputBreakdown @($Rows))) {
+                if ($null -eq $row) {
+                    continue
+                }
+
+                $copy = [ordered]@{}
+                foreach ($prop in $row.PSObject.Properties) {
+                    if ($prop.Name -eq "Timestamp") {
+                        $copy[$prop.Name] = Format-LocalDateTime $prop.Value
+                    }
+                    else {
+                        $copy[$prop.Name] = $prop.Value
+                    }
+                }
+
+                [pscustomobject]$copy
+            }
+        )
+    }
+
     $periodCostTotals = @()
     foreach ($periodWindow in $Snapshot.ModelTokenPeriodWindows) {
         $rows = @($Snapshot.ModelTokenPeriodRows | Where-Object { $_.PeriodGroup -eq $periodWindow.Group -and $_.PeriodName -eq $periodWindow.Name })
@@ -295,6 +319,7 @@ function Convert-SnapshotForJson {
                     LastModified = Format-DisplayDateTime $row.LastModified
                     SourceFile = $row.SourceFile
                     TokenRows = Copy-RowWithInputBreakdown @($row.TokenRows)
+                    TurnTokenRows = Copy-TurnRowsForJson @($row.TurnTokenRows)
                     ContextWindow = $row.ContextWindow
                     LatestUsageTimestamp = Format-LocalDateTime $row.LatestUsageTimestamp
                 }
