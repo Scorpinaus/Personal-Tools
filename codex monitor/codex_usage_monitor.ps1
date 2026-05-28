@@ -408,6 +408,23 @@ function Get-UsageMetricsFromEntry {
     return Convert-UsageToMetrics $usage
 }
 
+function Test-TokenCountEvent {
+    param([object]$Entry)
+
+    if ($null -eq $Entry) {
+        return $false
+    }
+
+    $entryType = Get-PropValue $Entry @("type")
+    if ($entryType -ne "event_msg") {
+        return $false
+    }
+
+    $payload = Get-PropValue $Entry @("payload")
+    $payloadType = Get-PropValue $payload @("type")
+    return $payloadType -eq "token_count"
+}
+
 function Get-UsageDeltaMetrics {
     param(
         [object]$PreviousTotal,
@@ -466,6 +483,10 @@ function Get-SessionUsageDeltas {
             $entry = $line | ConvertFrom-Json
         }
         catch {
+            continue
+        }
+
+        if (-not (Test-TokenCountEvent $entry)) {
             continue
         }
 
@@ -1659,6 +1680,7 @@ function Get-TokenUsageByModel {
     $buckets = @{}
 
     foreach ($file in (Get-SessionFiles -Root $Root -Archived:$Archived -Limit $Limit)) {
+        # LastWriteTimeUtc is only a candidate-file filter; event timestamps decide window membership.
         if ($file.LastWriteTimeUtc -lt $oldestStart) {
             continue
         }
