@@ -5,10 +5,13 @@
     const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
     const activeTabs = { costs: "modelCosts", rateHistory: "historyFiveHour", conversation: "conversationOverview" };
     const stopMonitorButton = document.getElementById("stopMonitor");
+    const turnPageSize = 10;
     let stopped = false;
     let refreshTimer = null;
     let conversationRows = [];
     let selectedConversationKey = null;
+    let selectedConversationPage = 1;
+    let currentCostBasisMode = "ApiUsdEstimate";
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -24,6 +27,38 @@
       return value === null || value === undefined || value === "" ? "" : money.format(value);
     }
 
+    function asArray(value) {
+      if (!value) return [];
+      return Array.isArray(value) ? value : [value];
+    }
+
+    function normalizeUsageData(data) {
+      const normalized = { ...(data || {}) };
+      [
+        "RateLimitRows",
+        "RateLimitHistoryRows",
+        "RateLimitHistorySummaryRows",
+        "RollingTokenRows",
+        "ModelTokenRows",
+        "ModelTokenPeriodRows",
+        "ModelTokenPeriodWindows",
+        "SourceCostRows",
+        "ModelCostTotals",
+        "ModelPeriodCostTotals",
+        "TokenRows"
+      ].forEach((key) => {
+        normalized[key] = asArray(normalized[key]);
+      });
+
+      normalized.ConversationOverviewRows = asArray(normalized.ConversationOverviewRows).map((row) => ({
+        ...(row || {}),
+        TokenRows: asArray(row?.TokenRows),
+        TurnTokenRows: asArray(row?.TurnTokenRows)
+      }));
+
+      return normalized;
+    }
+
     function fmtDate(value) {
       if (typeof value !== "string") return value ?? "";
       const match = value.match(/^\/Date\((\d+)\)\/$/);
@@ -34,9 +69,10 @@
     }
 
     function table(rows, columns) {
-      if (!rows || rows.length === 0) return `<p class="muted">No data yet.</p>`;
+      const safeRows = asArray(rows);
+      if (safeRows.length === 0) return `<p class="muted">No data yet.</p>`;
       const head = `<tr>${columns.map((col) => `<th>${esc(col.label)}</th>`).join("")}</tr>`;
-      const body = rows.map((row) => `<tr>${columns.map((col) => {
+      const body = safeRows.map((row) => `<tr>${columns.map((col) => {
         const raw = row[col.key];
         const value = col.date ? esc(fmtDate(raw)) : col.money ? fmtMoney(raw) : col.number ? fmt(raw) : esc(raw);
         return `<td>${value}</td>`;
@@ -337,12 +373,16 @@
     }
 
     function renderCosts(rows, totals, usdToSgdRate, modelPeriodRows, periodTotals) {
+      rows = asArray(rows);
+      totals = asArray(totals);
+      modelPeriodRows = asArray(modelPeriodRows);
+      periodTotals = asArray(periodTotals);
       const periods = ["Last 5 hours", "This week", "This month"];
       return periods.map((period) => {
-        const periodRows = (rows || []).filter((row) => row.Window === period);
-        const total = (totals || []).find((row) => row.Window === period) || {};
-        const historyRows = (modelPeriodRows || []).filter((row) => row.PeriodGroup === period);
-        const historyTotals = (periodTotals || []).filter((row) => row.PeriodGroup === period);
+        const periodRows = rows.filter((row) => row.Window === period);
+        const total = totals.find((row) => row.Window === period) || {};
+        const historyRows = modelPeriodRows.filter((row) => row.PeriodGroup === period);
+        const historyTotals = periodTotals.filter((row) => row.PeriodGroup === period);
         return `
           <h3>${esc(period)}</h3>
           ${table(periodRows, [
@@ -458,6 +498,66 @@
       return conversationRows.find((row) => conversationKey(row) === selectedConversationKey) || null;
     }
 
+    function conversationCostValue(row) {
+      if (currentCostBasisMode === "CodexCredits") {
+        return row?.EstimatedCostCredits ?? null;
+      }
+      return row?.EstimatedCostUsd ?? null;
+    }
+
+    function renderConversationCostSummary(row) {
+      const totals = row?.CostTotals || {};
+      if (currentCostBasisMode === "CodexCredits") {
+        return `<div class="total">
+          <span>totalCostCredits: <strong>${fmt(totals.TotalCostCredits || 0)}</strong></span>
+        </div>`;
+      }
+
+      return `<div class="total">
+        <span>totalCostUsd: <strong>${fmtMoney(totals.TotalCostUsd || 0)}</strong></span>
+        <span>totalCostSgd: <strong>${fmtMoney(totals.TotalCostSgd || 0)}</strong></span>
+      </div>`;
+    }
+
+    function renderTurnBreakdown(row) {
+      const rows = row?.TurnTokenRows || [];
+      if (rows.length === 0) {
+        return `<h3>Turn Breakdown</h3><p class="muted">No turn-level token usage found for this session.</p>`;
+      }
+
+      const totalPages = Math.max(1, Math.ceil(rows.length / turnPageSize));
+      selectedConversationPage = Math.max(1, Math.min(selectedConversationPage, totalPages));
+      const start = (selectedConversationPage - 1) * turnPageSize;
+      const pageRows = rows.slice(start, start + turnPageSize).map((turn) => ({
+        ...turn,
+        Cost: conversationCostValue(turn)
+      }));
+      const costColumn = currentCostBasisMode === "CodexCredits"
+        ? { key: "Cost", label: "Turn credits", number: true }
+        : { key: "Cost", label: "Turn cost USD", money: true };
+
+      const turnTable = table(pageRows, [
+        { key: "Turn", label: "Turn", number: true },
+        { key: "Timestamp", label: "Timestamp", date: true },
+        { key: "Model", label: "Model" },
+        { key: "Input", label: "Total input", number: true },
+        { key: "NonCachedInput", label: "Non-cached input", number: true },
+        { key: "CachedInput", label: "Cached input", number: true },
+        { key: "Output", label: "Output", number: true },
+        { key: "Reasoning", label: "Reasoning", number: true },
+        costColumn
+      ]);
+
+      return `<h3>Turn Breakdown</h3>
+        ${renderConversationCostSummary(row)}
+        ${turnTable}
+        <div class="pager">
+          <button class="pager-button conversation-page" type="button" data-page="prev" ${selectedConversationPage <= 1 ? "disabled" : ""}>Previous</button>
+          <span class="pager-status">Page ${fmt(selectedConversationPage)} of ${fmt(totalPages)}</span>
+          <button class="pager-button conversation-page" type="button" data-page="next" ${selectedConversationPage >= totalPages ? "disabled" : ""}>Next</button>
+        </div>`;
+    }
+
     function renderConversationAnalysis(row) {
       const source = document.getElementById("source");
       if (!row) {
@@ -465,7 +565,11 @@
         return `<p class="muted">Choose a session from Overview to analyze its token usage.</p>`;
       }
 
-      source.textContent = `Session: ${row.Session || ""} | Source: ${row.SourceFile || ""}`;
+      source.textContent = "";
+      const sourceLine = `<div class="source">
+        <div>Session: ${esc(row.Session || "")}</div>
+        <div>Source: ${esc(row.SourceFile || "")}</div>
+      </div>`;
       const summary = table(row.TokenRows, [
         { key: "Scope", label: "Scope" },
         { key: "Total", label: "Total", number: true },
@@ -476,18 +580,7 @@
         { key: "Reasoning", label: "Reasoning", number: true }
       ]);
 
-      const turns = table(row.TurnTokenRows, [
-        { key: "Turn", label: "Turn", number: true },
-        { key: "Timestamp", label: "Timestamp", date: true },
-        { key: "Model", label: "Model" },
-        { key: "Input", label: "Total input", number: true },
-        { key: "NonCachedInput", label: "Non-cached input", number: true },
-        { key: "CachedInput", label: "Cached input", number: true },
-        { key: "Output", label: "Output", number: true },
-        { key: "Reasoning", label: "Reasoning", number: true }
-      ]);
-
-      return `${summary}<h3>Turn Breakdown</h3>${turns}`;
+      return `${sourceLine}<h3>Overall</h3>${summary}${renderTurnBreakdown(row)}`;
     }
 
     function setConversationTab(tabId) {
@@ -544,8 +637,16 @@
       const analyze = event.target.closest(".conversation-analyze");
       if (analyze) {
         selectedConversationKey = analyze.dataset.conversationKey || null;
+        selectedConversationPage = 1;
         document.getElementById("conversationTokens").innerHTML = renderConversationAnalysis(findSelectedConversation());
         setConversationTab("conversationAnalysis");
+        return;
+      }
+
+      const pageButton = event.target.closest(".conversation-page");
+      if (pageButton && !pageButton.disabled) {
+        selectedConversationPage += pageButton.dataset.page === "next" ? 1 : -1;
+        document.getElementById("conversationTokens").innerHTML = renderConversationAnalysis(findSelectedConversation());
         return;
       }
 
@@ -579,11 +680,12 @@
       try {
         const res = await fetch("/api/usage", { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = normalizeUsageData(await res.json());
         document.getElementById("monitorState").textContent = "Running";
         error.style.display = "none";
         document.getElementById("updated").textContent = `Updated: ${data.UpdatedAtLocal}`;
         document.getElementById("plan").textContent = `Plan: ${data.PlanType || "unknown"}`;
+        currentCostBasisMode = data.CostBasisMode || "ApiUsdEstimate";
         document.getElementById("costAssumptions").textContent =
           `Cost basis: ${data.CostBasis || "API-equivalent estimate"} | Pricing mode: ${data.PricingMode || "Standard"} | Pricing source: ${data.PricingSource || ""} | SGD conversion: ${data.CostBasisMode === "CodexCredits" ? "not applied to credits" : `1 USD = ${data.UsdToSgdRate}`}`;
 
@@ -607,7 +709,7 @@
         document.getElementById("rateLimitHistory").innerHTML = renderRateLimitHistory(data.RateLimitHistoryRows, data.RateLimitHistorySummaryRows, data.RateLimitHistoryDays);
         document.getElementById("modelCosts").innerHTML = renderCosts(data.ModelTokenRows, data.ModelCostTotals, data.UsdToSgdRate, data.ModelTokenPeriodRows, data.ModelPeriodCostTotals);
         document.getElementById("sourceCosts").innerHTML = renderSourceCosts(data.SourceCostRows, data.UsdToSgdRate);
-        conversationRows = data.ConversationOverviewRows || [];
+        conversationRows = data.ConversationOverviewRows;
         if (selectedConversationKey && !findSelectedConversation()) {
           selectedConversationKey = null;
           activeTabs.conversation = "conversationOverview";

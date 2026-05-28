@@ -2002,20 +2002,40 @@ function Get-ConversationTurnTokenRows {
             if ([string]::IsNullOrWhiteSpace([string]$model)) {
                 $model = "unknown"
             }
+            $pricingBand = Get-PricingBand -Model $model -InputTokens ([long]$metrics.Input)
+            $costBucket = New-TokenBucket -Window "Conversation" -Model $model -PricingBand $pricingBand
+            Add-TokenMetrics -Bucket $costBucket -Metrics $metrics
+            Set-EstimatedCost $costBucket
 
             [pscustomobject]@{
                 Turn = $turn
                 Timestamp = $row.Timestamp
                 Model = $model
+                PricingBand = $costBucket.PricingBand
+                PricingMode = $costBucket.PricingMode
+                CostUnit = $costBucket.CostUnit
+                BillingConfidence = $costBucket.BillingConfidence
                 Total = $metrics.Total
                 Input = $metrics.Input
                 CachedInput = $metrics.CachedInput
                 NonCachedInput = [Math]::Max(0L, [long]$metrics.Input - [long]$metrics.CachedInput)
                 Output = $metrics.Output
                 Reasoning = $metrics.Reasoning
+                EstimatedCost = $costBucket.EstimatedCost
+                EstimatedCostUsd = $costBucket.EstimatedCostUsd
+                EstimatedCostCredits = $costBucket.EstimatedCostCredits
             }
         }
     )
+}
+
+function Get-ConversationCostTotals {
+    param([object[]]$Rows)
+
+    [pscustomobject]@{
+        TotalCostUsd = Get-TotalEstimatedCostUsd -Rows @($Rows)
+        TotalCostCredits = Get-TotalEstimatedCostCredits -Rows @($Rows)
+    }
 }
 
 function Get-LatestConversationUsageMatches {
@@ -2094,13 +2114,15 @@ function Get-ConversationOverviewRows {
         foreach ($file in @($Files)) {
             $matches = Get-LatestConversationUsageMatches -Files @($file) -Tail 0
             $usageMatch = $matches.Usage
+            $turnTokenRows = @(Get-ConversationTurnTokenRows -Path $file.FullName)
 
             [pscustomobject]@{
                 Session = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
                 LastModified = $file.LastWriteTime
                 SourceFile = $file.FullName
                 TokenRows = @(Convert-ConversationUsageRows $usageMatch)
-                TurnTokenRows = @(Get-ConversationTurnTokenRows -Path $file.FullName)
+                TurnTokenRows = $turnTokenRows
+                CostTotals = Get-ConversationCostTotals -Rows $turnTokenRows
                 ContextWindow = if ($null -ne $usageMatch) { $usageMatch.ContextWindow } else { $null }
                 LatestUsageTimestamp = if ($null -ne $usageMatch) { $usageMatch.Timestamp } else { $null }
             }

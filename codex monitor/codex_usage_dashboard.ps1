@@ -221,6 +221,13 @@ function Convert-SnapshotForJson {
                     }
                 }
 
+                if ($copy.Contains("EstimatedCostUsd") -and $null -ne $copy["EstimatedCostUsd"]) {
+                    $copy["EstimatedCostSgd"] = [Math]::Round([double]$copy["EstimatedCostUsd"] * $UsdToSgdRate, 4)
+                }
+                else {
+                    $copy["EstimatedCostSgd"] = $null
+                }
+
                 [pscustomobject]$copy
             }
         )
@@ -314,12 +321,19 @@ function Convert-SnapshotForJson {
     $conversationOverviewRows = @(
         if ($Snapshot.PSObject.Properties["ConversationOverviewRows"]) {
             foreach ($row in $Snapshot.ConversationOverviewRows) {
+                $conversationCostTotals = $row.CostTotals
+                $conversationTotalCostUsd = if ($null -ne $conversationCostTotals -and $null -ne $conversationCostTotals.TotalCostUsd) { [double]$conversationCostTotals.TotalCostUsd } else { 0.0 }
                 [pscustomobject]@{
                     Session = $row.Session
                     LastModified = Format-DisplayDateTime $row.LastModified
                     SourceFile = $row.SourceFile
                     TokenRows = Copy-RowWithInputBreakdown @($row.TokenRows)
                     TurnTokenRows = Copy-TurnRowsForJson @($row.TurnTokenRows)
+                    CostTotals = [pscustomobject]@{
+                        TotalCostUsd = $conversationTotalCostUsd
+                        TotalCostSgd = [Math]::Round($conversationTotalCostUsd * $UsdToSgdRate, 4)
+                        TotalCostCredits = if ($null -ne $conversationCostTotals -and $null -ne $conversationCostTotals.TotalCostCredits) { $conversationCostTotals.TotalCostCredits } else { 0.0 }
+                    }
                     ContextWindow = $row.ContextWindow
                     LatestUsageTimestamp = Format-LocalDateTime $row.LatestUsageTimestamp
                 }

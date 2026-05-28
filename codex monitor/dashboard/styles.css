@@ -247,6 +247,40 @@
     .row-action:hover {
       background: #ccebe4;
     }
+    .pager {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .pager-button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 10px;
+      background: #fbfaf8;
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1;
+    }
+    .pager-button:hover:not(:disabled) {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .pager-button:disabled {
+      cursor: default;
+      opacity: 0.5;
+    }
+    .pager-status {
+      min-width: 90px;
+      text-align: center;
+    }
     .chart-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
