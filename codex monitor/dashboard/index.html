@@ -67,8 +67,15 @@
           <h2>Conversation Token Usage</h2>
         </summary>
         <div class="section-body">
-          <div id="conversationTokens"></div>
-          <p class="source" id="source"></p>
+          <div class="tabs" role="tablist">
+            <button class="tab active" type="button" data-tab-scope="conversation" data-tab="conversationOverview">Overview</button>
+            <button class="tab tab-disabled" type="button" id="conversationAnalysisTab" disabled>Conversation Analysis</button>
+          </div>
+          <div id="conversationOverview" class="tab-panel" data-tab-scope="conversation"></div>
+          <div id="conversationAnalysis" class="tab-panel" data-tab-scope="conversation" hidden>
+            <div id="conversationTokens"></div>
+            <p class="source" id="source"></p>
+          </div>
         </div>
       </details>
     </section>

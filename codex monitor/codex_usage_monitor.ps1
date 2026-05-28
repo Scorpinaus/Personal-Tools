@@ -1973,6 +1973,19 @@ function New-ConversationUsageMatch {
     }
 }
 
+function Convert-ConversationUsageRows {
+    param([object]$UsageMatch)
+
+    if ($null -eq $UsageMatch) {
+        return @()
+    }
+
+    return @(
+        Convert-TokenUsage "Conversation total" $UsageMatch.TotalUsage
+        Convert-TokenUsage "Last update" $UsageMatch.LastUsage
+    ) | Where-Object { $null -ne $_ }
+}
+
 function Get-LatestConversationUsageMatches {
     param(
         [object[]]$Files,
@@ -2040,6 +2053,28 @@ function Get-LatestConversationUsageMatches {
     }
 }
 
+function Get-ConversationOverviewRows {
+    param(
+        [object[]]$Files
+    )
+
+    return @(
+        foreach ($file in @($Files)) {
+            $matches = Get-LatestConversationUsageMatches -Files @($file) -Tail 0
+            $usageMatch = $matches.Usage
+
+            [pscustomobject]@{
+                Session = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+                LastModified = $file.LastWriteTime
+                SourceFile = $file.FullName
+                TokenRows = @(Convert-ConversationUsageRows $usageMatch)
+                ContextWindow = if ($null -ne $usageMatch) { $usageMatch.ContextWindow } else { $null }
+                LatestUsageTimestamp = if ($null -ne $usageMatch) { $usageMatch.Timestamp } else { $null }
+            }
+        }
+    )
+}
+
 function Get-LatestCodexUsageSnapshot {
     param(
         [string]$Root,
@@ -2055,10 +2090,12 @@ function Get-LatestCodexUsageSnapshot {
 
     $nowUtc = [DateTime]::UtcNow
     $searches = @()
+    $overviewFiles = @()
     if ($ConversationLookbackHours -gt 0) {
         $sinceUtc = $nowUtc.AddHours(-1 * $ConversationLookbackHours)
+        $overviewFiles = @(Get-SessionFilesSince -Root $Root -Archived:$Archived -SinceUtc $sinceUtc)
         $searches += [pscustomobject]@{
-            Files = @(Get-SessionFilesSince -Root $Root -Archived:$Archived -SinceUtc $sinceUtc)
+            Files = $overviewFiles
             Tail = 0
             SinceUtc = $sinceUtc
         }
@@ -2122,15 +2159,13 @@ function Get-LatestCodexUsageSnapshot {
             PricingSource = if ($CostBasisMode -eq "CodexCredits") { "https://help.openai.com/en/articles/20001106-codex-rate-card" } else { "https://openai.com/api/pricing/" }
             RegionalUpliftApplied = $false
             TokenRows = if ($null -ne $usageMatch) {
-                @(
-                    Convert-TokenUsage "Conversation total" $usageMatch.TotalUsage
-                    Convert-TokenUsage "Last update" $usageMatch.LastUsage
-                ) | Where-Object { $null -ne $_ }
+                @(Convert-ConversationUsageRows $usageMatch)
             }
             else {
                 @()
             }
             ContextWindow = if ($null -ne $usageMatch) { $usageMatch.ContextWindow } else { $null }
+            ConversationOverviewRows = @(Get-ConversationOverviewRows -Files $overviewFiles)
         }
 
         Write-RateLimitHistorySamples -Root $Root -Snapshot $snapshot

@@ -3,10 +3,12 @@
 
     const number = new Intl.NumberFormat();
     const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-    const activeTabs = { costs: "modelCosts", rateHistory: "historyFiveHour" };
+    const activeTabs = { costs: "modelCosts", rateHistory: "historyFiveHour", conversation: "conversationOverview" };
     const stopMonitorButton = document.getElementById("stopMonitor");
     let stopped = false;
     let refreshTimer = null;
+    let conversationRows = [];
+    let selectedConversationKey = null;
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -427,9 +429,82 @@
       }).join("") + `<p class="source">Source attribution is estimated from logged text lengths and reconciled against exact-ish model/period token totals.</p>`;
     }
 
+    function conversationKey(row) {
+      return row?.SourceFile || row?.Session || "";
+    }
+
+    function renderConversationOverview(rows) {
+      if (!rows || rows.length === 0) {
+        return `<p class="muted">No session files modified in the last 24 hours.</p>`;
+      }
+
+      const body = rows.map((row) => {
+        const key = conversationKey(row);
+        return `<tr>
+          <td>${esc(row.Session)}</td>
+          <td>${esc(row.LastModified)}</td>
+          <td class="action-cell"><button class="row-action conversation-analyze" type="button" data-conversation-key="${esc(key)}">Analyze</button></td>
+        </tr>`;
+      }).join("");
+
+      return `<div class="table-scroll"><table>
+        <thead><tr><th>Session ID</th><th>Last modified</th><th></th></tr></thead>
+        <tbody>${body}</tbody>
+      </table></div>`;
+    }
+
+    function findSelectedConversation() {
+      if (!selectedConversationKey) return null;
+      return conversationRows.find((row) => conversationKey(row) === selectedConversationKey) || null;
+    }
+
+    function renderConversationAnalysis(row) {
+      const source = document.getElementById("source");
+      if (!row) {
+        source.textContent = "";
+        return `<p class="muted">Choose a session from Overview to analyze its token usage.</p>`;
+      }
+
+      source.textContent = `Session: ${row.Session || ""} | Source: ${row.SourceFile || ""}`;
+      return table(row.TokenRows, [
+        { key: "Scope", label: "Scope" },
+        { key: "Total", label: "Total", number: true },
+        { key: "Input", label: "Total input", number: true },
+        { key: "CachedInput", label: "Cached input", number: true },
+        { key: "NonCachedInput", label: "Non-cached input", number: true },
+        { key: "Output", label: "Output", number: true },
+        { key: "Reasoning", label: "Reasoning", number: true }
+      ]);
+    }
+
+    function setConversationTab(tabId) {
+      activeTabs.conversation = tabId;
+      document.querySelectorAll(`.tab[data-tab-scope="conversation"]`).forEach((item) => {
+        item.classList.toggle("active", item.dataset.tab === tabId);
+      });
+      const analysisTab = document.getElementById("conversationAnalysisTab");
+      if (analysisTab) {
+        analysisTab.classList.toggle("active", tabId === "conversationAnalysis");
+      }
+      document.querySelectorAll(`.tab-panel[data-tab-scope="conversation"]`).forEach((panel) => {
+        panel.hidden = panel.id !== tabId;
+      });
+    }
+
+    function renderConversationSection() {
+      document.getElementById("conversationOverview").innerHTML = renderConversationOverview(conversationRows);
+      document.getElementById("conversationTokens").innerHTML = renderConversationAnalysis(findSelectedConversation());
+      setConversationTab(activeTabs.conversation || "conversationOverview");
+    }
+
     function activateTab(tab) {
       const tabId = tab.dataset.tab;
+      if (!tabId || tab.disabled) return;
       const scope = tab.dataset.tabScope || "";
+      if (scope === "conversation") {
+        setConversationTab(tabId);
+        return;
+      }
       activeTabs[scope] = tabId;
       document.querySelectorAll(`.tab[data-tab-scope="${scope}"]`).forEach((item) => {
         item.classList.toggle("active", item.dataset.tab === tabId);
@@ -453,6 +528,14 @@
     }
 
     document.addEventListener("click", (event) => {
+      const analyze = event.target.closest(".conversation-analyze");
+      if (analyze) {
+        selectedConversationKey = analyze.dataset.conversationKey || null;
+        document.getElementById("conversationTokens").innerHTML = renderConversationAnalysis(findSelectedConversation());
+        setConversationTab("conversationAnalysis");
+        return;
+      }
+
       const tab = event.target.closest(".tab");
       if (!tab) return;
       activateTab(tab);
@@ -488,7 +571,6 @@
         error.style.display = "none";
         document.getElementById("updated").textContent = `Updated: ${data.UpdatedAtLocal}`;
         document.getElementById("plan").textContent = `Plan: ${data.PlanType || "unknown"}`;
-        document.getElementById("source").textContent = `Session: ${data.Session || ""} | Source: ${data.SourceFile || ""}`;
         document.getElementById("costAssumptions").textContent =
           `Cost basis: ${data.CostBasis || "API-equivalent estimate"} | Pricing mode: ${data.PricingMode || "Standard"} | Pricing source: ${data.PricingSource || ""} | SGD conversion: ${data.CostBasisMode === "CodexCredits" ? "not applied to credits" : `1 USD = ${data.UsdToSgdRate}`}`;
 
@@ -512,15 +594,12 @@
         document.getElementById("rateLimitHistory").innerHTML = renderRateLimitHistory(data.RateLimitHistoryRows, data.RateLimitHistorySummaryRows, data.RateLimitHistoryDays);
         document.getElementById("modelCosts").innerHTML = renderCosts(data.ModelTokenRows, data.ModelCostTotals, data.UsdToSgdRate, data.ModelTokenPeriodRows, data.ModelPeriodCostTotals);
         document.getElementById("sourceCosts").innerHTML = renderSourceCosts(data.SourceCostRows, data.UsdToSgdRate);
-        document.getElementById("conversationTokens").innerHTML = table(data.TokenRows, [
-          { key: "Scope", label: "Scope" },
-          { key: "Total", label: "Total", number: true },
-          { key: "Input", label: "Total input", number: true },
-          { key: "CachedInput", label: "Cached input", number: true },
-          { key: "NonCachedInput", label: "Non-cached input", number: true },
-          { key: "Output", label: "Output", number: true },
-          { key: "Reasoning", label: "Reasoning", number: true }
-        ]);
+        conversationRows = data.ConversationOverviewRows || [];
+        if (selectedConversationKey && !findSelectedConversation()) {
+          selectedConversationKey = null;
+          activeTabs.conversation = "conversationOverview";
+        }
+        renderConversationSection();
       } catch (err) {
         error.textContent = `Unable to refresh usage data: ${err.message}`;
         error.style.display = "block";

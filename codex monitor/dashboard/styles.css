@@ -218,8 +218,34 @@
       color: var(--accent);
       font-weight: 650;
     }
+    .tab:disabled {
+      cursor: default;
+      opacity: 0.72;
+    }
+    .tab-disabled.active {
+      opacity: 1;
+    }
     .tab-panel[hidden] {
       display: none;
+    }
+    .action-cell {
+      text-align: right;
+      width: 1%;
+    }
+    .row-action {
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: 6px 10px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1;
+    }
+    .row-action:hover {
+      background: #ccebe4;
     }
     .chart-grid {
       display: grid;

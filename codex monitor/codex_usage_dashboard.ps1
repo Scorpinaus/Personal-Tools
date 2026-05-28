@@ -287,6 +287,21 @@ function Convert-SnapshotForJson {
         }
     )
 
+    $conversationOverviewRows = @(
+        if ($Snapshot.PSObject.Properties["ConversationOverviewRows"]) {
+            foreach ($row in $Snapshot.ConversationOverviewRows) {
+                [pscustomobject]@{
+                    Session = $row.Session
+                    LastModified = Format-DisplayDateTime $row.LastModified
+                    SourceFile = $row.SourceFile
+                    TokenRows = Copy-RowWithInputBreakdown @($row.TokenRows)
+                    ContextWindow = $row.ContextWindow
+                    LatestUsageTimestamp = Format-LocalDateTime $row.LatestUsageTimestamp
+                }
+            }
+        }
+    )
+
     [pscustomobject]@{
         UpdatedAtLocal = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         EventTimestamp = $Snapshot.Timestamp
@@ -311,6 +326,7 @@ function Convert-SnapshotForJson {
         ModelCostTotals = $costTotals
         ModelPeriodCostTotals = @($periodCostTotals | Sort-Object PeriodGroup, PeriodSortOrder)
         TokenRows = Copy-RowWithInputBreakdown @($Snapshot.TokenRows)
+        ConversationOverviewRows = $conversationOverviewRows
         ContextWindow = $Snapshot.ContextWindow
         UsdToSgdRate = $UsdToSgdRate
     }
