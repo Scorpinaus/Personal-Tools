@@ -1,0 +1,25 @@
+# .NET build outputs
+**/bin/
+**/obj/
+
+# .NET user/local files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# Test and coverage outputs
+TestResults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+
+# Editor and OS local files
+.vscode/
+.idea/
+*.swp
+*.tmp
+Thumbs.db
+Desktop.ini
