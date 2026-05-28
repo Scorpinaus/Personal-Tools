@@ -3,7 +3,7 @@
 
     const number = new Intl.NumberFormat();
     const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-    const activeTabs = { costs: "modelCosts", rateHistory: "historyFiveHour", conversation: "conversationOverview" };
+    const activeTabs = { costs: "modelCosts", modelCostPeriod: "modelCostsOverall", rateHistory: "historyFiveHour", conversation: "conversationOverview" };
     const stopMonitorButton = document.getElementById("stopMonitor");
     const turnPageSize = 10;
     let stopped = false;
@@ -372,62 +372,104 @@
       ]);
     }
 
+    function modelCostTable(rows) {
+      return table(rows, [
+        { key: "Model", label: "Model" },
+        { key: "PricingBand", label: "Pricing band" },
+        { key: "PricingMode", label: "Mode" },
+        { key: "CostUnit", label: "Unit" },
+        { key: "BillingConfidence", label: "Confidence" },
+        { key: "Total", label: "Total", number: true },
+        { key: "Input", label: "Total input", number: true },
+        { key: "CachedInput", label: "Cached input", number: true },
+        { key: "NonCachedInput", label: "Non-cached input", number: true },
+        { key: "Output", label: "Output", number: true },
+        { key: "Reasoning", label: "Reasoning", number: true },
+        { key: "Events", label: "Events", number: true },
+        { key: "EstimatedCostUsd", label: "Cost USD", money: true },
+        { key: "EstimatedCostCredits", label: "Credits", number: true }
+      ]);
+    }
+
+    function modelCostPeriodId(period) {
+      return `modelCosts${period.replace(/[^A-Za-z0-9]/g, "")}`;
+    }
+
+    function modelCostHistoryTitle(period) {
+      return period === "Last 5 hours" ? "Previous 5-hour buckets" : period === "This week" ? "Daily buckets" : "Weekly buckets";
+    }
+
+    function renderModelCostTotals(total) {
+      return `<div class="total">
+        <span>totalCostUsd: <strong>${fmtMoney(total.TotalCostUsd || 0)}</strong></span>
+        <span>totalCostSgd: <strong>${fmtMoney(total.TotalCostSgd || 0)}</strong></span>
+        <span>totalCostCredits: <strong>${fmt(total.TotalCostCredits || 0)}</strong></span>
+      </div>`;
+    }
+
+    function renderModelCostOverviewPeriod(period, rows, totals) {
+      const periodRows = rows.filter((row) => row.Window === period);
+      const total = totals.find((row) => row.Window === period) || {};
+      return `
+        <h3>${esc(period)}</h3>
+        ${modelCostTable(periodRows)}
+        ${renderModelCostTotals(total)}
+      `;
+    }
+
+    function renderModelCostPeriod(period, rows, totals, usdToSgdRate, modelPeriodRows, periodTotals) {
+      const periodRows = rows.filter((row) => row.Window === period);
+      const total = totals.find((row) => row.Window === period) || {};
+      const historyRows = modelPeriodRows.filter((row) => row.PeriodGroup === period);
+      const historyTotals = periodTotals.filter((row) => row.PeriodGroup === period);
+      return `
+        <h3>${esc(period)}</h3>
+        ${modelCostTable(periodRows)}
+        ${renderModelCostTotals(total)}
+        <h4>${modelCostHistoryTitle(period)}</h4>
+        ${table(historyRows, [
+          { key: "PeriodLabel", label: "Period" },
+          { key: "Model", label: "Model" },
+          { key: "PricingBand", label: "Pricing band" },
+          { key: "PricingMode", label: "Mode" },
+          { key: "CostUnit", label: "Unit" },
+          { key: "BillingConfidence", label: "Confidence" },
+          { key: "Total", label: "Total", number: true },
+          { key: "Input", label: "Total input", number: true },
+          { key: "CachedInput", label: "Cached input", number: true },
+          { key: "NonCachedInput", label: "Non-cached input", number: true },
+          { key: "Output", label: "Output", number: true },
+          { key: "Reasoning", label: "Reasoning", number: true },
+          { key: "Events", label: "Events", number: true },
+          { key: "EstimatedCostUsd", label: "Cost USD", money: true },
+          { key: "EstimatedCostCredits", label: "Credits", number: true }
+        ])}
+        <h4>Period totals</h4>
+        ${renderPeriodTotals(historyTotals, usdToSgdRate)}
+      `;
+    }
+
     function renderCosts(rows, totals, usdToSgdRate, modelPeriodRows, periodTotals) {
       rows = asArray(rows);
       totals = asArray(totals);
       modelPeriodRows = asArray(modelPeriodRows);
       periodTotals = asArray(periodTotals);
       const periods = ["Last 5 hours", "This week", "This month"];
-      return periods.map((period) => {
-        const periodRows = rows.filter((row) => row.Window === period);
-        const total = totals.find((row) => row.Window === period) || {};
-        const historyRows = modelPeriodRows.filter((row) => row.PeriodGroup === period);
-        const historyTotals = periodTotals.filter((row) => row.PeriodGroup === period);
-        return `
-          <h3>${esc(period)}</h3>
-          ${table(periodRows, [
-            { key: "Model", label: "Model" },
-            { key: "PricingBand", label: "Pricing band" },
-            { key: "PricingMode", label: "Mode" },
-            { key: "CostUnit", label: "Unit" },
-            { key: "BillingConfidence", label: "Confidence" },
-            { key: "Total", label: "Total", number: true },
-            { key: "Input", label: "Total input", number: true },
-            { key: "CachedInput", label: "Cached input", number: true },
-            { key: "NonCachedInput", label: "Non-cached input", number: true },
-            { key: "Output", label: "Output", number: true },
-            { key: "Reasoning", label: "Reasoning", number: true },
-            { key: "Events", label: "Events", number: true },
-            { key: "EstimatedCostUsd", label: "Cost USD", money: true },
-            { key: "EstimatedCostCredits", label: "Credits", number: true }
-          ])}
-          <div class="total">
-            <span>totalCostUsd: <strong>${fmtMoney(total.TotalCostUsd || 0)}</strong></span>
-            <span>totalCostSgd: <strong>${fmtMoney(total.TotalCostSgd || 0)}</strong></span>
-            <span>totalCostCredits: <strong>${fmt(total.TotalCostCredits || 0)}</strong></span>
-          </div>
-          <h4>${period === "Last 5 hours" ? "Previous 5-hour buckets" : period === "This week" ? "Daily buckets" : "Weekly buckets"}</h4>
-          ${table(historyRows, [
-            { key: "PeriodLabel", label: "Period" },
-            { key: "Model", label: "Model" },
-            { key: "PricingBand", label: "Pricing band" },
-            { key: "PricingMode", label: "Mode" },
-            { key: "CostUnit", label: "Unit" },
-            { key: "BillingConfidence", label: "Confidence" },
-            { key: "Total", label: "Total", number: true },
-            { key: "Input", label: "Total input", number: true },
-            { key: "CachedInput", label: "Cached input", number: true },
-            { key: "NonCachedInput", label: "Non-cached input", number: true },
-            { key: "Output", label: "Output", number: true },
-            { key: "Reasoning", label: "Reasoning", number: true },
-            { key: "Events", label: "Events", number: true },
-            { key: "EstimatedCostUsd", label: "Cost USD", money: true },
-            { key: "EstimatedCostCredits", label: "Credits", number: true }
-          ])}
-          <h4>Period totals</h4>
-          ${renderPeriodTotals(historyTotals, usdToSgdRate)}
-        `;
-      }).join("") + `<p class="source">SGD conversion: 1 USD = ${esc(usdToSgdRate)} SGD.</p>`;
+      const active = activeTabs.modelCostPeriod || "modelCostsOverall";
+      const tabButtons = [
+        { id: "modelCostsOverall", label: "Overall" },
+        ...periods.map((period) => ({ id: modelCostPeriodId(period), label: period }))
+      ].map((tab) => `<button class="tab ${active === tab.id ? "active" : ""}" type="button" data-tab-scope="modelCostPeriod" data-tab="${tab.id}">${esc(tab.label)}</button>`).join("");
+      const overview = periods.map((period) => renderModelCostOverviewPeriod(period, rows, totals)).join("");
+      const panels = [
+        `<div id="modelCostsOverall" class="tab-panel" data-tab-scope="modelCostPeriod" ${active === "modelCostsOverall" ? "" : "hidden"}>${overview}</div>`,
+        ...periods.map((period) => {
+          const id = modelCostPeriodId(period);
+          return `<div id="${id}" class="tab-panel" data-tab-scope="modelCostPeriod" ${active === id ? "" : "hidden"}>${renderModelCostPeriod(period, rows, totals, usdToSgdRate, modelPeriodRows, periodTotals)}</div>`;
+        })
+      ].join("");
+
+      return `<div class="tabs" role="tablist">${tabButtons}</div>${panels}<p class="source">SGD conversion: 1 USD = ${esc(usdToSgdRate)} SGD.</p>`;
     }
 
     function renderSourceCosts(rows, usdToSgdRate) {
