@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Image To Pose</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Image To Pose</h1>
+          <p>{{ input_count }} stored input image{{ '' if input_count == 1 else 's' }} - {{ outputs|length }} latest output image{{ '' if outputs|length == 1 else 's' }}</p>
+        </div>
+        <form method="post" action="{{ url_for('run_pose') }}" class="run-inline">
+          <input type="hidden" name="view" value="{{ last_run.settings.view }}">
+          <input type="hidden" name="no_person" value="{{ last_run.settings.no_person }}">
+          <input type="hidden" name="min_detection_confidence" value="{{ last_run.settings.min_detection_confidence }}">
+          <input type="hidden" name="min_visibility" value="{{ last_run.settings.min_visibility }}">
+          <button class="primary-button" type="submit" title="Run pose detection">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            Run
+          </button>
+        </form>
+      </header>
+
+      <section class="workspace">
+        <aside class="controls-panel">
+          <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" class="tool-block">
+            <label class="field-label" for="images">Add Images</label>
+            <input id="images" name="images" type="file" accept="image/*" multiple>
+            <button type="submit" class="secondary-button" title="Upload selected images">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 10h4v7h6v-7h4L12 3z"/><path d="M5 19h14v2H5z"/></svg>
+              Upload
+            </button>
+            {% if active_batch_id %}
+              <p class="path-line">Active batch: {{ active_batch_id }}</p>
+              <p class="path-line">{{ active_input_dir }}</p>
+            {% else %}
+              <p class="path-line">Upload images to create an active batch.</p>
+            {% endif %}
+          </form>
+
+          <form method="post" action="{{ url_for('run_pose') }}" class="tool-block">
+            <label class="field-label" for="view">View</label>
+            <select id="view" name="view">
+              {% for value, label in [('front', 'Front'), ('side', 'Side'), ('back', 'Back'), ('all', 'All')] %}
+                <option value="{{ value }}" {{ 'selected' if last_run.settings.view == value else '' }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+
+            <label class="field-label" for="no_person">No Person</label>
+            <select id="no_person" name="no_person">
+              <option value="copy" {{ 'selected' if last_run.settings.no_person == 'copy' else '' }}>Copy original</option>
+              <option value="skip" {{ 'selected' if last_run.settings.no_person == 'skip' else '' }}>Skip output</option>
+            </select>
+
+            <label class="field-label" for="min_detection_confidence">Detection Confidence</label>
+            <input id="min_detection_confidence" name="min_detection_confidence" type="number" min="0" max="1" step="0.05" value="{{ last_run.settings.min_detection_confidence }}">
+
+            <label class="field-label" for="min_visibility">Landmark Visibility</label>
+            <input id="min_visibility" name="min_visibility" type="number" min="0" max="1" step="0.05" value="{{ last_run.settings.min_visibility }}">
+
+            <button type="submit" class="primary-button full-width" title="Generate wireframes">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+              Generate
+            </button>
+            {% if latest_output_dir %}
+              <p class="path-line">Latest output: {{ latest_output_dir }}</p>
+            {% else %}
+              <p class="path-line">Output root: {{ output_dir }}</p>
+            {% endif %}
+          </form>
+
+          {% if last_run.summary %}
+            <section class="status-block" aria-live="polite">
+              <h2>Status</h2>
+              <p>{{ last_run.summary }}</p>
+              {% if last_run.logs %}
+                <pre>{% for line in last_run.logs %}{{ line }}
+{% endfor %}</pre>
+              {% endif %}
+            </section>
+          {% endif %}
+        </aside>
+
+        <section class="gallery-panel">
+          <div class="gallery-head">
+            <div>
+              <h2>Latest Output Batch</h2>
+              {% if latest_output_dir %}
+                <p>{{ latest_output_dir.name }}</p>
+              {% else %}
+                <p>{{ image_extensions }}</p>
+              {% endif %}
+            </div>
+          </div>
+          {% if outputs %}
+            <div class="gallery-grid">
+              {% for image in outputs %}
+                <article class="image-card">
+                  <a href="{{ image.url }}" target="_blank" rel="noreferrer">
+                    <img src="{{ image.url }}" alt="{{ image.name }}">
+                  </a>
+                  <span>{{ image.name }}</span>
+                </article>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty-state">
+              <h2>No Output Yet</h2>
+              <p>Upload images to create a batch, then generate a pose view.</p>
+            </div>
+          {% endif %}
+        </section>
+      </section>
+    </main>
+  </body>
+</html>
