@@ -16,7 +16,7 @@ The `front` view draws the wireframe over the original image. The `side` and `ba
 ## Setup
 
 ```powershell
-cd "C:\Users\Admin\Personal Tools\imgToPose"
+cd ""
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
