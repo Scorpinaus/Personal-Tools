@@ -105,6 +105,111 @@ output/batch_YYYYMMDD_HHMMSS_abcdef_run_YYYYMMDD_HHMMSS_ab12/
 
 The UI gallery shows the latest output batch.
 
+## Local API
+
+Start the same local app:
+
+```powershell
+.\run_imgToPose.bat
+```
+
+Then call the synchronous pose endpoint:
+
+```text
+POST http://127.0.0.1:7860/api/pose
+```
+
+Example single-image request:
+
+```powershell
+$body = @{
+  image_path = "C:\Users\Admin\Personal Tools\imgToPose\input\sample_person.jpg"
+  options = @{
+    view = "front"
+    model_variant = "full"
+    no_person = "copy"
+    min_detection_confidence = 0.5
+    min_visibility = 0.45
+  }
+} | ConvertTo-Json -Depth 4
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:7860/api/pose" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+Example batch request:
+
+```json
+{
+  "image_paths": [
+    "C:\\path\\to\\image1.jpg",
+    "C:\\path\\to\\image2.png"
+  ],
+  "options": {
+    "view": "all",
+    "model_variant": "heavy",
+    "no_person": "copy"
+  }
+}
+```
+
+The API accepts local filesystem paths and local `file://` URLs. It copies the supplied images into an isolated API input batch before processing.
+
+Options:
+
+- `view`: `front`, `side`, `back`, or `all`
+- `model_variant`: `lite`, `full`, or `heavy`
+- `no_person`: `copy` or `skip`
+- `min_detection_confidence`: number from `0.0` to `1.0`
+- `min_visibility`: number from `0.0` to `1.0`
+
+Successful response:
+
+```json
+{
+  "ok": true,
+  "operation_id": "api_20260529_095100_ab12",
+  "input_dir": "C:\\...\\imgToPose\\input\\api_20260529_095100_ab12",
+  "output_dir": "C:\\...\\imgToPose\\output\\api_20260529_095100_ab12_run_20260529_095105_cd34",
+  "output_url": "/api/outputs/api_20260529_095100_ab12_run_20260529_095105_cd34",
+  "options": {
+    "view": "front",
+    "model_variant": "full",
+    "no_person": "copy",
+    "min_detection_confidence": 0.5,
+    "min_visibility": 0.45
+  },
+  "result": {
+    "images": 1,
+    "written": 1,
+    "failed": 0
+  },
+  "inputs": [
+    {
+      "source": "C:\\path\\to\\source.jpg",
+      "stored": "C:\\...\\imgToPose\\input\\api_...\\source.jpg"
+    }
+  ],
+  "files": [
+    {
+      "name": "source_pose_front.jpg",
+      "path": "C:\\...\\imgToPose\\output\\api_...\\source_pose_front.jpg",
+      "url": "/outputs/api_.../source_pose_front.jpg"
+    }
+  ],
+  "logs": []
+}
+```
+
+Fetch output folder details later:
+
+```text
+GET http://127.0.0.1:7860/api/outputs/<output-folder-name>
+```
+
 ## Model variants
 
 - `Lite`: fastest, lowest quality.

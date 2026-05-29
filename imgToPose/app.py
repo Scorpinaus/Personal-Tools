@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import shutil
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 from uuid import uuid4
 
-from flask import Flask, redirect, render_template, request, send_from_directory, url_for
+from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for
 from werkzeug.utils import secure_filename
 
 from process_poses import DEFAULT_MODEL_VARIANT, IMAGE_EXTENSIONS, MODEL_VARIANTS, process_folder
@@ -13,6 +16,8 @@ from process_poses import DEFAULT_MODEL_VARIANT, IMAGE_EXTENSIONS, MODEL_VARIANT
 ROOT = Path(__file__).resolve().parent
 INPUT_DIR = ROOT / "input"
 OUTPUT_DIR = ROOT / "output"
+VALID_VIEWS = {"front", "side", "back", "all"}
+VALID_NO_PERSON_MODES = {"copy", "skip"}
 
 app = Flask(__name__)
 app.secret_key = "img-to-pose-local"
@@ -56,6 +61,125 @@ def unique_file_path(folder: Path, filename: str) -> Path:
         counter += 1
 
 
+def api_error(message: str, status_code: int = 400, **details: object):
+    payload = {"ok": False, "error": message}
+    if details:
+        payload["details"] = details
+    return jsonify(payload), status_code
+
+
+def parse_local_image_link(value: object) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Image path must be a non-empty string.")
+
+    text = value.strip()
+    parsed = urlparse(text)
+
+    is_windows_drive_path = len(parsed.scheme) == 1 and len(text) > 2 and text[1] == ":"
+    if parsed.scheme and not is_windows_drive_path:
+        if parsed.scheme.lower() != "file":
+            raise ValueError("Only local file paths or file:// URLs are supported.")
+        if parsed.netloc and parsed.netloc.lower() != "localhost":
+            raise ValueError("Only local file:// URLs are supported.")
+        path_text = url2pathname(parsed.path)
+    else:
+        path_text = text
+
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.resolve()
+
+
+def validate_image_paths(payload: dict[str, object]) -> list[Path]:
+    image_values: list[object] = []
+    if "image_path" in payload:
+        image_values.append(payload["image_path"])
+
+    if "image_paths" in payload:
+        values = payload["image_paths"]
+        if not isinstance(values, list):
+            raise ValueError("image_paths must be a list of local image paths.")
+        image_values.extend(values)
+
+    if not image_values:
+        raise ValueError("Provide image_path or image_paths.")
+
+    paths = [parse_local_image_link(value) for value in image_values]
+    for path in paths:
+        if not path.exists():
+            raise FileNotFoundError(f"Image does not exist: {path}")
+        if not path.is_file():
+            raise ValueError(f"Image path is not a file: {path}")
+        if path.suffix.lower() not in IMAGE_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported image extension for {path.name}. "
+                f"Supported extensions: {', '.join(sorted(IMAGE_EXTENSIONS))}."
+            )
+
+    return paths
+
+
+def parse_confidence(value: object, field_name: str) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a number from 0.0 to 1.0.") from exc
+
+    if confidence < 0.0 or confidence > 1.0:
+        raise ValueError(f"{field_name} must be from 0.0 to 1.0.")
+    return confidence
+
+
+def api_options(payload: dict[str, object]) -> dict[str, object]:
+    raw_options = payload.get("options", {})
+    if raw_options is None:
+        raw_options = {}
+    if not isinstance(raw_options, dict):
+        raise ValueError("options must be an object.")
+
+    model_variant = str(raw_options.get("model_variant", DEFAULT_MODEL_VARIANT)).lower()
+    if model_variant not in MODEL_VARIANTS:
+        raise ValueError(
+            f"model_variant must be one of: {', '.join(sorted(MODEL_VARIANTS))}."
+        )
+
+    view = str(raw_options.get("view", "front")).lower()
+    if view not in VALID_VIEWS:
+        raise ValueError(f"view must be one of: {', '.join(sorted(VALID_VIEWS))}.")
+
+    no_person = str(raw_options.get("no_person", "copy")).lower()
+    if no_person not in VALID_NO_PERSON_MODES:
+        raise ValueError(
+            f"no_person must be one of: {', '.join(sorted(VALID_NO_PERSON_MODES))}."
+        )
+
+    return {
+        "view": view,
+        "model_variant": model_variant,
+        "no_person": no_person,
+        "min_detection_confidence": parse_confidence(
+            raw_options.get("min_detection_confidence", 0.5),
+            "min_detection_confidence",
+        ),
+        "min_visibility": parse_confidence(raw_options.get("min_visibility", 0.45), "min_visibility"),
+    }
+
+
+def copy_api_inputs(paths: list[Path], batch_id: str) -> tuple[Path, list[dict[str, str]]]:
+    batch_input_dir = INPUT_DIR / batch_id
+    copied: list[dict[str, str]] = []
+
+    for source in paths:
+        filename = secure_filename(source.name) or f"image{source.suffix.lower()}"
+        batch_input_dir.mkdir(parents=True, exist_ok=True)
+        destination = unique_file_path(batch_input_dir, filename)
+        shutil.copy2(source, destination)
+        copied.append({"source": str(source), "stored": str(destination)})
+
+    return batch_input_dir, copied
+
+
 def folder_images(folder: Path) -> list[dict[str, object]]:
     if not folder.exists():
         return []
@@ -73,6 +197,25 @@ def folder_images(folder: Path) -> list[dict[str, object]]:
             }
         )
     return images
+
+
+def output_files(output_dir: Path) -> list[dict[str, str]]:
+    files: list[dict[str, str]] = []
+    if not output_dir.exists():
+        return files
+
+    for path in sorted(output_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        relative_to_output = path.relative_to(OUTPUT_DIR).as_posix()
+        files.append(
+            {
+                "name": path.relative_to(output_dir).as_posix(),
+                "path": str(path),
+                "url": url_for("output_file", filename=relative_to_output),
+            }
+        )
+    return files
 
 
 def newest_output_dir() -> Path | None:
@@ -191,6 +334,78 @@ def run_pose():
     last_run["logs"] = logs[-80:]
     last_run["settings"] = settings
     return redirect(url_for("index"))
+
+
+@app.post("/api/pose")
+def api_pose():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return api_error("Request body must be a JSON object.")
+
+    try:
+        image_paths = validate_image_paths(payload)
+        settings = api_options(payload)
+    except FileNotFoundError as exc:
+        return api_error(str(exc), 404)
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+
+    operation_id = f"api_{timestamp()}_{uuid4().hex[:4]}"
+    logs: list[str] = []
+
+    try:
+        active_input_dir, copied_inputs = copy_api_inputs(image_paths, operation_id)
+        output_batch_dir = OUTPUT_DIR / f"{operation_id}_run_{timestamp()}_{uuid4().hex[:4]}"
+
+        result = process_folder(
+            input_dir=active_input_dir,
+            output_dir=output_batch_dir,
+            view=str(settings["view"]),
+            min_detection_confidence=float(settings["min_detection_confidence"]),
+            min_visibility=float(settings["min_visibility"]),
+            no_person_mode=str(settings["no_person"]),
+            model_variant=str(settings["model_variant"]),
+            model_path=ROOT / MODEL_VARIANTS[str(settings["model_variant"])]["path"],
+            model_url=str(MODEL_VARIANTS[str(settings["model_variant"])]["url"]),
+            log=logs.append,
+        )
+    except Exception as exc:
+        return api_error("Pose generation failed.", 500, exception=str(exc), logs=logs[-80:])
+
+    return jsonify(
+        {
+            "ok": True,
+            "operation_id": operation_id,
+            "input_dir": str(active_input_dir),
+            "output_dir": str(output_batch_dir),
+            "output_url": url_for("api_output_folder", folder=output_batch_dir.name),
+            "options": settings,
+            "result": result,
+            "inputs": copied_inputs,
+            "files": output_files(output_batch_dir),
+            "logs": logs[-80:],
+        }
+    )
+
+
+@app.get("/api/outputs/<path:folder>")
+def api_output_folder(folder: str):
+    output_dir = (OUTPUT_DIR / folder).resolve()
+    try:
+        output_dir.relative_to(OUTPUT_DIR.resolve())
+    except ValueError:
+        return api_error("Output folder must be inside the app output directory.", 400)
+
+    if not output_dir.exists() or not output_dir.is_dir():
+        return api_error(f"Output folder does not exist: {folder}", 404)
+
+    return jsonify(
+        {
+            "ok": True,
+            "output_dir": str(output_dir),
+            "files": output_files(output_dir),
+        }
+    )
 
 
 @app.get("/outputs/<path:filename>")
