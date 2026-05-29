@@ -1,2 +1,13 @@
 memory-bank/
 codex_monitor*.zip
+
+# Generated app input/output files
+imgToPose/input/*
+imgToPose/output/*
+!imgToPose/input/.gitkeep
+!imgToPose/output/.gitkeep
+
+vidFrame extractor/input/*
+vidFrame extractor/output/*
+!vidFrame extractor/input/.gitkeep
+!vidFrame extractor/output/.gitkeep
