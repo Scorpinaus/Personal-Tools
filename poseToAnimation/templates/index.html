@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pose To Animation</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Pose To Animation</h1>
+          <p>{{ uploaded_images|length }} input image{{ '' if uploaded_images|length == 1 else 's' }}{% if latest_output_dir %} - {{ latest_output_dir.name }}{% endif %}</p>
+        </div>
+        <form method="post" action="{{ url_for('generate') }}" class="run-inline">
+          {% for key, value in last_run.settings.items() %}
+            <input type="hidden" name="{{ key }}" value="{{ value }}">
+          {% endfor %}
+          <button class="primary-button" type="submit" title="Generate animation">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            Generate
+          </button>
+        </form>
+      </header>
+
+      <section class="workspace">
+        <aside class="controls-panel">
+          <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" class="tool-block">
+            <label class="field-label" for="images">Images</label>
+            <input id="images" name="images" type="file" accept="image/*" multiple>
+            <label class="field-label" for="folder">Folder</label>
+            <input id="folder" name="images" type="file" accept="image/*" multiple webkitdirectory>
+            <button type="submit" class="secondary-button" title="Upload selected images">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 10h4v7h6v-7h4L12 3z"/><path d="M5 19h14v2H5z"/></svg>
+              Upload
+            </button>
+            <p class="path-line" id="selected-count">{% if active_batch_id %}Active batch: {{ active_batch_id }}{% else %}Supported: {{ image_extensions }}{% endif %}</p>
+          </form>
+
+          <form method="post" action="{{ url_for('generate') }}" class="tool-block" id="settings-form">
+            <div class="two-col">
+              <label>
+                <span class="field-label">Seconds</span>
+                <input name="duration_seconds" type="number" min="0.25" max="120" step="0.25" value="{{ last_run.settings.duration_seconds }}">
+              </label>
+              <label>
+                <span class="field-label">Repeats</span>
+                <input name="repeat_count" type="number" min="1" max="50" step="1" value="{{ last_run.settings.repeat_count }}">
+              </label>
+            </div>
+
+            <div class="two-col">
+              <label>
+                <span class="field-label">FPS</span>
+                <input name="fps" type="number" min="4" max="60" step="1" value="{{ last_run.settings.fps }}">
+              </label>
+              <label>
+                <span class="field-label">Model</span>
+                <select name="model_variant">
+                  {% for value, label in [('lite', 'Lite'), ('full', 'Full'), ('heavy', 'Heavy')] %}
+                    <option value="{{ value }}" {{ 'selected' if last_run.settings.model_variant == value else '' }}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+            </div>
+
+            <div class="two-col">
+              <label>
+                <span class="field-label">Width</span>
+                <input name="width" type="number" min="240" max="1920" step="20" value="{{ last_run.settings.width }}">
+              </label>
+              <label>
+                <span class="field-label">Height</span>
+                <input name="height" type="number" min="240" max="1920" step="20" value="{{ last_run.settings.height }}">
+              </label>
+            </div>
+
+            <label class="field-label" for="min_detection_confidence">Detection Confidence</label>
+            <input id="min_detection_confidence" name="min_detection_confidence" type="number" min="0" max="1" step="0.05" value="{{ last_run.settings.min_detection_confidence }}">
+
+            <label class="field-label" for="min_visibility">Landmark Visibility</label>
+            <input id="min_visibility" name="min_visibility" type="number" min="0" max="1" step="0.05" value="{{ last_run.settings.min_visibility }}">
+
+            <p class="estimate" id="frame-estimate"></p>
+            <button type="submit" class="primary-button full-width" title="Create MP4 and GIF">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h10v2H4z"/><path d="M4 9h10v2H4z"/><path d="M4 14h7v2H4z"/><path d="m15 12 5 3-5 3z"/></svg>
+              Create Animation
+            </button>
+          </form>
+
+          {% if last_run.summary %}
+            <section class="status-block" aria-live="polite">
+              <h2>Status</h2>
+              <p>{{ last_run.summary }}</p>
+              {% if last_run.logs %}
+                <pre>{% for line in last_run.logs %}{{ line }}
+{% endfor %}</pre>
+              {% endif %}
+            </section>
+          {% endif %}
+        </aside>
+
+        <section class="main-panel">
+          <section class="preview-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Output</h2>
+                {% if latest_output_dir %}
+                  <p>{{ latest_output_dir }}</p>
+                {% else %}
+                  <p>{{ output_dir }}</p>
+                {% endif %}
+              </div>
+              {% if output_links.mp4 or output_links.gif %}
+                <div class="download-actions">
+                  {% if output_links.mp4 %}<a href="{{ output_links.mp4 }}" download>MP4</a>{% endif %}
+                  {% if output_links.gif %}<a href="{{ output_links.gif }}" download>GIF</a>{% endif %}
+                </div>
+              {% endif %}
+            </div>
+
+            {% if output_links.mp4 %}
+              <video controls loop src="{{ output_links.mp4 }}"></video>
+            {% elif output_links.gif %}
+              <img class="gif-preview" src="{{ output_links.gif }}" alt="Generated stickman animation">
+            {% else %}
+              <div class="empty-state">
+                <h2>No Animation Yet</h2>
+                <p>Upload at least two pose images.</p>
+              </div>
+            {% endif %}
+          </section>
+
+          <section class="sequence-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Sequence</h2>
+                {% if active_input_dir %}
+                  <p>{{ active_input_dir }}</p>
+                {% else %}
+                  <p>Filename order</p>
+                {% endif %}
+              </div>
+            </div>
+
+            {% if uploaded_images %}
+              <div class="sequence-grid">
+                {% for image in uploaded_images %}
+                  <article class="image-card">
+                    <a href="{{ image.url }}" target="_blank" rel="noreferrer">
+                      <img src="{{ image.url }}" alt="{{ image.name }}">
+                    </a>
+                    <span>{{ loop.index }}. {{ image.name }}</span>
+                  </article>
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="empty-state compact">
+                <h2>No Batch Loaded</h2>
+                <p>Choose images or a folder.</p>
+              </div>
+            {% endif %}
+
+            {% if last_run.manifest and last_run.manifest.skipped %}
+              <div class="skip-list">
+                <h2>Skipped</h2>
+                {% for item in last_run.manifest.skipped %}
+                  <p>{{ item.source }} - {{ item.reason }}</p>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
