@@ -11,3 +11,8 @@ vidFrame extractor/input/*
 vidFrame extractor/output/*
 !vidFrame extractor/input/.gitkeep
 !vidFrame extractor/output/.gitkeep
+
+poseToAnimation/input/*
+poseToAnimation/output/*
+!poseToAnimation/input/.gitkeep
+!poseToAnimation/output/.gitkeep
