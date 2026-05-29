@@ -17,7 +17,7 @@ The `front`, `side`, and `back` views render clean wireframe-only skeletons on a
 ## Setup
 
 ```powershell
-cd "C:\Users\Admin\Personal Tools\imgToPose"
+cd ""
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
