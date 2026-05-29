@@ -9,9 +9,10 @@ Batch-process images and draw a person skeleton/wireframe when a person is detec
 - Writes processed images to the `output` folder.
 - Copies the original image unchanged when no person is detected, so there is no wireframe in the output.
 - Supports `front`, `side`, `back`, or `all` view rendering.
+- Supports `Lite`, `Full`, and `Heavy` MediaPipe model variants.
 - Downloads the MediaPipe Pose Landmarker model to `assets/` automatically the first time it runs.
 
-The `front` view draws the wireframe over the original image. The `side` and `back` views render the detected pose as a rotated skeleton on a white canvas. Since one image cannot reveal hidden body geometry, side/back views are estimated projections from the pose landmarks rather than true novel-camera reconstructions.
+The `front`, `side`, and `back` views render clean wireframe-only skeletons on a white canvas. Side/back rendering uses MediaPipe `pose_world_landmarks` when available, with normalized image landmarks as a fallback. Since one image cannot reveal hidden body geometry, side/back views are still estimated projections rather than true novel-camera reconstructions.
 
 ## Setup
 
@@ -34,6 +35,12 @@ Run:
 
 ```powershell
 python .\process_poses.py --view front
+```
+
+Choose model quality:
+
+```powershell
+python .\process_poses.py --model-variant heavy --view all
 ```
 
 Render all angles:
@@ -79,7 +86,8 @@ In the UI:
 1. Choose one or more images.
 2. Click `Upload`.
 3. Select `Front`, `Side`, `Back`, or `All`.
-4. Click `Generate`.
+4. Select `Lite`, `Full`, or `Heavy`.
+5. Click `Generate`.
 
 Each upload creates a separate input batch folder:
 
@@ -96,6 +104,12 @@ output/batch_YYYYMMDD_HHMMSS_abcdef_run_YYYYMMDD_HHMMSS_ab12/
 ```
 
 The UI gallery shows the latest output batch.
+
+## Model variants
+
+- `Lite`: fastest, lowest quality.
+- `Full`: balanced default.
+- `Heavy`: slowest, usually best pose estimation quality for real photos.
 
 ## Output names
 

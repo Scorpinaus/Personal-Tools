@@ -7,7 +7,7 @@ from uuid import uuid4
 from flask import Flask, redirect, render_template, request, send_from_directory, url_for
 from werkzeug.utils import secure_filename
 
-from process_poses import DEFAULT_MODEL_PATH, DEFAULT_MODEL_URL, IMAGE_EXTENSIONS, process_folder
+from process_poses import DEFAULT_MODEL_VARIANT, IMAGE_EXTENSIONS, MODEL_VARIANTS, process_folder
 
 
 ROOT = Path(__file__).resolve().parent
@@ -25,6 +25,7 @@ last_run: dict[str, object] = {
     "latest_output_dir": None,
     "settings": {
         "view": "front",
+        "model_variant": DEFAULT_MODEL_VARIANT,
         "no_person": "copy",
         "min_detection_confidence": 0.5,
         "min_visibility": 0.45,
@@ -64,10 +65,11 @@ def folder_images(folder: Path) -> list[dict[str, object]]:
         if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
         relative = path.relative_to(folder).as_posix()
+        output_relative = path.relative_to(OUTPUT_DIR).as_posix()
         images.append(
             {
                 "name": relative,
-                "url": url_for("output_file", filename=relative, v=int(path.stat().st_mtime)),
+                "url": url_for("output_file", filename=output_relative, v=int(path.stat().st_mtime)),
             }
         )
     return images
@@ -105,6 +107,7 @@ def index():
         outputs=outputs,
         last_run=last_run,
         image_extensions=", ".join(sorted(IMAGE_EXTENSIONS)),
+        model_variants=MODEL_VARIANTS,
     )
 
 
@@ -140,8 +143,13 @@ def upload():
 
 @app.post("/run")
 def run_pose():
+    model_variant = request.form.get("model_variant", DEFAULT_MODEL_VARIANT)
+    if model_variant not in MODEL_VARIANTS:
+        model_variant = DEFAULT_MODEL_VARIANT
+
     settings = {
         "view": request.form.get("view", "front"),
+        "model_variant": model_variant,
         "no_person": request.form.get("no_person", "copy"),
         "min_detection_confidence": float(request.form.get("min_detection_confidence", "0.5")),
         "min_visibility": float(request.form.get("min_visibility", "0.45")),
@@ -162,14 +170,16 @@ def run_pose():
             min_detection_confidence=float(settings["min_detection_confidence"]),
             min_visibility=float(settings["min_visibility"]),
             no_person_mode=str(settings["no_person"]),
-            model_path=ROOT / DEFAULT_MODEL_PATH,
-            model_url=DEFAULT_MODEL_URL,
+            model_variant=str(settings["model_variant"]),
+            model_path=ROOT / MODEL_VARIANTS[str(settings["model_variant"])]["path"],
+            model_url=str(MODEL_VARIANTS[str(settings["model_variant"])]["url"]),
             log=logs.append,
         )
         last_run["latest_output_dir"] = str(output_batch_dir)
         summary = (
             f"Processed {result['images']} image{'s' if result['images'] != 1 else ''} from {active_batch_id}; "
-            f"wrote {result['written']} output{'s' if result['written'] != 1 else ''}."
+            f"wrote {result['written']} output{'s' if result['written'] != 1 else ''} "
+            f"with the {settings['model_variant']} model."
         )
         if result["failed"]:
             summary += f" Failed images: {result['failed']}."

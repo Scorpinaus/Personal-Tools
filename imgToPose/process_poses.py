@@ -14,11 +14,32 @@ import numpy as np
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
-DEFAULT_MODEL_PATH = Path("assets/pose_landmarker_full.task")
-DEFAULT_MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-    "pose_landmarker_full/float16/1/pose_landmarker_full.task"
-)
+MODEL_VARIANTS = {
+    "lite": {
+        "path": Path("assets/pose_landmarker_lite.task"),
+        "url": (
+            "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+            "pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+        ),
+    },
+    "full": {
+        "path": Path("assets/pose_landmarker_full.task"),
+        "url": (
+            "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+            "pose_landmarker_full/float16/1/pose_landmarker_full.task"
+        ),
+    },
+    "heavy": {
+        "path": Path("assets/pose_landmarker_heavy.task"),
+        "url": (
+            "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+            "pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
+        ),
+    },
+}
+DEFAULT_MODEL_VARIANT = "full"
+DEFAULT_MODEL_PATH = MODEL_VARIANTS[DEFAULT_MODEL_VARIANT]["path"]
+DEFAULT_MODEL_URL = MODEL_VARIANTS[DEFAULT_MODEL_VARIANT]["url"]
 POSE_CONNECTIONS = [
     (connection.start, connection.end)
     for connection in mp.tasks.vision.PoseLandmarksConnections.POSE_LANDMARKS
@@ -81,15 +102,21 @@ def parse_args() -> argparse.Namespace:
         help="When no person is detected, copy the original image or skip writing output.",
     )
     parser.add_argument(
+        "--model-variant",
+        choices=tuple(MODEL_VARIANTS),
+        default=DEFAULT_MODEL_VARIANT,
+        help="Pose Landmarker model size. Heavy is slower but usually more accurate.",
+    )
+    parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL_PATH,
+        default=None,
         type=Path,
-        help="Path to a MediaPipe Pose Landmarker .task model.",
+        help="Optional path to a custom MediaPipe Pose Landmarker .task model.",
     )
     parser.add_argument(
         "--model-url",
-        default=DEFAULT_MODEL_URL,
-        help="URL used to download the default .task model when it is missing.",
+        default=None,
+        help="Optional URL used to download a missing custom .task model.",
     )
     return parser.parse_args()
 
@@ -115,8 +142,8 @@ def iter_images(input_dir: Path) -> Iterable[Path]:
             yield path
 
 
-def extract_landmarks(result: object) -> list[LandmarkPoint] | None:
-    all_pose_landmarks = getattr(result, "pose_landmarks", None)
+def extract_landmarks(result: object, attribute: str) -> list[LandmarkPoint] | None:
+    all_pose_landmarks = getattr(result, attribute, None)
     if not all_pose_landmarks:
         return None
     pose_landmarks = all_pose_landmarks[0]
@@ -151,37 +178,15 @@ def ensure_model(model_path: Path, model_url: str) -> Path:
     return model_path
 
 
+def resolve_model(model_variant: str, model_path: Path | None, model_url: str | None) -> tuple[Path, str]:
+    variant = MODEL_VARIANTS[model_variant]
+    return model_path or variant["path"], model_url or variant["url"]
+
+
 def output_path_for(input_path: Path, input_dir: Path, output_dir: Path, view: str, no_person: bool) -> Path:
     relative = input_path.relative_to(input_dir)
     suffix = NO_PERSON_SUFFIX if no_person else f"_pose_{view}"
     return output_dir / relative.parent / f"{relative.stem}{suffix}{relative.suffix}"
-
-
-def draw_front_overlay(
-    image: np.ndarray,
-    landmarks: list[LandmarkPoint],
-    min_visibility: float,
-) -> np.ndarray:
-    output = image.copy()
-    height, width = output.shape[:2]
-
-    for start_idx, end_idx in POSE_CONNECTIONS:
-        start = landmarks[start_idx]
-        end = landmarks[end_idx]
-        if start.visibility < min_visibility or end.visibility < min_visibility:
-            continue
-        start_xy = (int(start.x * width), int(start.y * height))
-        end_xy = (int(end.x * width), int(end.y * height))
-        cv2.line(output, start_xy, end_xy, FRONT_COLOR, 3, cv2.LINE_AA)
-
-    for point in landmarks:
-        if point.visibility < min_visibility:
-            continue
-        center = (int(point.x * width), int(point.y * height))
-        cv2.circle(output, center, 5, JOINT_COLOR, -1, cv2.LINE_AA)
-        cv2.circle(output, center, 3, FRONT_COLOR, -1, cv2.LINE_AA)
-
-    return output
 
 
 def render_rotated_skeleton(
@@ -189,6 +194,7 @@ def render_rotated_skeleton(
     landmarks: list[LandmarkPoint],
     view: str,
     min_visibility: float,
+    normalized_coordinates: bool,
 ) -> np.ndarray:
     height, width = image_shape[:2]
     canvas = np.full((height, width, 3), 255, dtype=np.uint8)
@@ -204,8 +210,8 @@ def render_rotated_skeleton(
             projected.append(None)
             continue
 
-        x = point.x - 0.5
-        y = point.y - 0.5
+        x = point.x - 0.5 if normalized_coordinates else point.x
+        y = point.y - 0.5 if normalized_coordinates else point.y
         z = point.z
         rotated_x = x * cos(angle) + z * sin(angle)
         rotated_y = y
@@ -254,13 +260,28 @@ def render_rotated_skeleton(
 
 def render_view(
     image: np.ndarray,
-    landmarks: list[LandmarkPoint],
+    image_landmarks: list[LandmarkPoint],
+    world_landmarks: list[LandmarkPoint] | None,
     view: str,
     min_visibility: float,
 ) -> np.ndarray:
     if view == "front":
-        return draw_front_overlay(image, landmarks, min_visibility)
-    return render_rotated_skeleton(image.shape, landmarks, view, min_visibility)
+        return render_rotated_skeleton(
+            image.shape,
+            image_landmarks,
+            view,
+            min_visibility,
+            normalized_coordinates=True,
+        )
+
+    skeleton_landmarks = world_landmarks or image_landmarks
+    return render_rotated_skeleton(
+        image.shape,
+        skeleton_landmarks,
+        view,
+        min_visibility,
+        normalized_coordinates=world_landmarks is None,
+    )
 
 
 def process_image(
@@ -281,7 +302,8 @@ def process_image(
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     result = landmarker.detect(mp_image)
-    landmarks = extract_landmarks(result)
+    landmarks = extract_landmarks(result, "pose_landmarks")
+    world_landmarks = extract_landmarks(result, "pose_world_landmarks")
 
     if landmarks is None or not person_detected(landmarks, min_visibility):
         if no_person_mode == "copy":
@@ -293,7 +315,7 @@ def process_image(
         return 0, 0
 
     for view in views:
-        rendered = render_view(image, landmarks, view, min_visibility)
+        rendered = render_view(image, landmarks, world_landmarks, view, min_visibility)
         output_path = output_path_for(image_path, input_dir, output_dir, view, no_person=False)
         write_image(output_path, rendered)
         log(f"Wrote {view} pose: {output_path}")
@@ -308,12 +330,14 @@ def process_folder(
     min_detection_confidence: float = 0.5,
     min_visibility: float = 0.45,
     no_person_mode: str = "copy",
-    model_path: Path = DEFAULT_MODEL_PATH,
-    model_url: str = DEFAULT_MODEL_URL,
+    model_variant: str = DEFAULT_MODEL_VARIANT,
+    model_path: Path | None = None,
+    model_url: str | None = None,
     log: Callable[[str], None] = print,
 ) -> dict[str, int]:
     input_dir = input_dir.resolve()
     output_dir = output_dir.resolve()
+    model_path, model_url = resolve_model(model_variant, model_path, model_url)
     model_path = ensure_model(model_path, model_url)
 
     if not input_dir.exists():
@@ -367,6 +391,7 @@ def main() -> int:
         min_detection_confidence=args.min_detection_confidence,
         min_visibility=args.min_visibility,
         no_person_mode=args.no_person,
+        model_variant=args.model_variant,
         model_path=args.model,
         model_url=args.model_url,
     )

@@ -15,6 +15,7 @@
         </div>
         <form method="post" action="{{ url_for('run_pose') }}" class="run-inline">
           <input type="hidden" name="view" value="{{ last_run.settings.view }}">
+          <input type="hidden" name="model_variant" value="{{ last_run.settings.model_variant }}">
           <input type="hidden" name="no_person" value="{{ last_run.settings.no_person }}">
           <input type="hidden" name="min_detection_confidence" value="{{ last_run.settings.min_detection_confidence }}">
           <input type="hidden" name="min_visibility" value="{{ last_run.settings.min_visibility }}">
@@ -47,6 +48,13 @@
             <select id="view" name="view">
               {% for value, label in [('front', 'Front'), ('side', 'Side'), ('back', 'Back'), ('all', 'All')] %}
                 <option value="{{ value }}" {{ 'selected' if last_run.settings.view == value else '' }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+
+            <label class="field-label" for="model_variant">Model</label>
+            <select id="model_variant" name="model_variant">
+              {% for value, label in [('lite', 'Lite'), ('full', 'Full'), ('heavy', 'Heavy')] %}
+                <option value="{{ value }}" {{ 'selected' if last_run.settings.model_variant == value else '' }}>{{ label }}</option>
               {% endfor %}
             </select>
 
