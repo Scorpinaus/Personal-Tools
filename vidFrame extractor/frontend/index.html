@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video Frame Extractor</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>Video Frame Extractor</h1>
+          <p id="folderPaths">Loading workspace...</p>
+        </div>
+        <button id="refreshButton" class="iconButton" type="button" title="Refresh videos">Refresh</button>
+      </header>
+
+      <section class="workspace">
+        <aside class="videoPane">
+          <div class="paneHeader">
+            <h2>Input Videos</h2>
+            <label class="fileButton">
+              Upload
+              <input id="uploadInput" type="file" accept="video/*" />
+            </label>
+          </div>
+          <div id="videoList" class="videoList"></div>
+        </aside>
+
+        <section class="controlPane">
+          <div class="metadataStrip" id="metadataStrip">
+            <span>Select a video from the input folder.</span>
+          </div>
+
+          <form id="extractForm" class="extractForm">
+            <fieldset>
+              <legend>Timing</legend>
+              <div class="segmented">
+                <label><input type="radio" name="mode" value="all" checked /> Every frame</label>
+                <label><input type="radio" name="mode" value="seconds" /> Seconds</label>
+                <label><input type="radio" name="mode" value="milliseconds" /> Milliseconds</label>
+                <label><input type="radio" name="mode" value="frames" /> Frames</label>
+              </div>
+              <div class="fieldRow">
+                <label for="intervalInput">Interval</label>
+                <input id="intervalInput" name="interval" type="number" min="0.001" step="0.001" value="1" disabled />
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Output</legend>
+              <div class="fieldGrid">
+                <label>
+                  Format
+                  <select id="formatSelect" name="format">
+                    <option value="jpg">JPG</option>
+                    <option value="png">PNG</option>
+                  </select>
+                </label>
+                <label>
+                  Folder mode
+                  <select id="overwriteSelect" name="overwrite">
+                    <option value="unique">Create unique folder</option>
+                    <option value="overwrite">Overwrite folder</option>
+                    <option value="append">Append frames</option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            <div class="actions">
+              <button id="startButton" type="submit" disabled>Extract Frames</button>
+              <button id="cancelButton" class="secondary" type="button" disabled>Cancel</button>
+            </div>
+          </form>
+
+          <section class="jobPane" aria-live="polite">
+            <div class="jobHeader">
+              <h2>Job</h2>
+              <span id="jobStatus" class="status idle">Idle</span>
+            </div>
+            <progress id="progressBar" value="0" max="100"></progress>
+            <div class="jobStats">
+              <span id="frameCount">Frames: 0</span>
+              <span id="timeCount">Time: --</span>
+              <span id="outputPath">Output: --</span>
+            </div>
+            <pre id="logOutput"></pre>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
