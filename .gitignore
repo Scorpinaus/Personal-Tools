@@ -16,3 +16,6 @@ poseToAnimation/input/*
 poseToAnimation/output/*
 !poseToAnimation/input/.gitkeep
 !poseToAnimation/output/.gitkeep
+
+# Vendored PDF.js distribution folders
+pdfjs-*-dist/
