@@ -295,6 +295,38 @@
       white-space: nowrap;
     }
 
+    .search-input {
+      width: clamp(150px, 22vw, 260px);
+      height: 30px;
+      border: 1px solid #cdd5d1;
+      border-radius: 6px;
+      padding: 0 9px;
+      color: var(--ink);
+      background: #ffffff;
+      font-size: 0.88rem;
+    }
+
+    .search-input:focus-visible {
+      outline: 3px solid rgba(8, 127, 114, 0.22);
+      outline-offset: 2px;
+    }
+
+    .search-input:disabled {
+      cursor: not-allowed;
+      opacity: 0.48;
+    }
+
+    .search-count {
+      display: inline-grid;
+      place-items: center;
+      min-width: 74px;
+      height: 30px;
+      padding: 0 8px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      white-space: nowrap;
+    }
+
     .reader {
       position: relative;
       display: grid;
@@ -639,16 +671,90 @@
     }
 
     .page-shell {
+      position: relative;
       display: flex;
       justify-content: center;
       min-width: min-content;
+      background: #ffffff;
+      box-shadow: var(--paper-shadow);
     }
 
     .pdf-canvas {
       display: block;
       max-width: none;
       background: #ffffff;
-      box-shadow: var(--paper-shadow);
+    }
+
+    .textLayer {
+      --min-font-size: 1;
+      --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+      --min-font-size-inv: calc(1 / var(--min-font-size));
+      position: absolute;
+      inset: 0;
+      overflow: clip;
+      opacity: 1;
+      line-height: 1;
+      text-align: initial;
+      text-size-adjust: none;
+      forced-color-adjust: none;
+      transform-origin: 0 0;
+      z-index: 2;
+    }
+
+    .textLayer :is(span, br) {
+      position: absolute;
+      color: transparent;
+      white-space: pre;
+      cursor: text;
+      transform-origin: 0% 0%;
+    }
+
+    .textLayer > :not(.markedContent),
+    .textLayer .markedContent span:not(.markedContent) {
+      z-index: 1;
+      --font-height: 0;
+      --scale-x: 1;
+      --rotate: 0deg;
+      font-size: calc(var(--text-scale-factor) * var(--font-height));
+      min-height: calc(var(--text-scale-factor) * var(--font-height));
+      transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+    }
+
+    .textLayer .markedContent {
+      display: contents;
+    }
+
+    .textLayer span[role="img"] {
+      user-select: none;
+      cursor: default;
+    }
+
+    .textLayer ::selection {
+      background: rgba(8, 127, 114, 0.28);
+    }
+
+    .textLayer br::selection {
+      background: transparent;
+    }
+
+    .search-highlight-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .search-highlight {
+      position: absolute;
+      border-radius: 3px;
+      background: rgba(250, 204, 21, 0.42);
+      mix-blend-mode: multiply;
+    }
+
+    .search-highlight.current {
+      background: rgba(8, 127, 114, 0.34);
+      outline: 2px solid rgba(8, 127, 114, 0.62);
+      outline-offset: 1px;
     }
 
     .reader-status {
@@ -812,6 +918,45 @@
         </button>
       </div>
 
+      <div class="control-group" aria-label="Search controls">
+        <input
+          class="search-input"
+          type="search"
+          id="searchInput"
+          placeholder="Search"
+          aria-label="Search text"
+          disabled
+        >
+
+        <button
+          class="icon-button"
+          type="button"
+          id="previousMatchButton"
+          title="Previous match"
+          aria-label="Previous search match"
+          disabled
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="m18 15-6-6-6 6"></path>
+          </svg>
+        </button>
+
+        <button
+          class="icon-button"
+          type="button"
+          id="nextMatchButton"
+          title="Next match"
+          aria-label="Next search match"
+          disabled
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </button>
+
+        <output class="search-count" id="searchCount" aria-live="polite">0 of 0</output>
+      </div>
+
       <div class="control-group" aria-label="Zoom controls">
         <button
           class="icon-button"
@@ -933,8 +1078,10 @@
           </aside>
 
           <div class="canvas-scroll" id="canvasScroll">
-            <div class="page-shell">
+            <div class="page-shell" id="pageShell">
               <canvas class="pdf-canvas" id="pdfCanvas"></canvas>
+              <div class="search-highlight-layer" id="searchHighlightLayer" aria-hidden="true"></div>
+              <div class="textLayer" id="textLayer"></div>
             </div>
           </div>
         </div>
@@ -961,6 +1108,10 @@
     const nextPageButton = document.querySelector("#nextPageButton");
     const pageNumberInput = document.querySelector("#pageNumberInput");
     const totalPages = document.querySelector("#totalPages");
+    const searchInput = document.querySelector("#searchInput");
+    const previousMatchButton = document.querySelector("#previousMatchButton");
+    const nextMatchButton = document.querySelector("#nextMatchButton");
+    const searchCount = document.querySelector("#searchCount");
     const zoomOutButton = document.querySelector("#zoomOutButton");
     const zoomInButton = document.querySelector("#zoomInButton");
     const fitWidthButton = document.querySelector("#fitWidthButton");
@@ -974,7 +1125,10 @@
     const documentName = document.querySelector("#documentName");
     const canvasStage = document.querySelector("#canvasStage");
     const canvasScroll = document.querySelector("#canvasScroll");
+    const pageShell = document.querySelector("#pageShell");
     const canvas = document.querySelector("#pdfCanvas");
+    const textLayerContainer = document.querySelector("#textLayer");
+    const searchHighlightLayer = document.querySelector("#searchHighlightLayer");
     const readerStatus = document.querySelector("#readerStatus");
     const outlinePanel = document.querySelector("#outlinePanel");
     const outlineStatus = document.querySelector("#outlineStatus");
@@ -985,8 +1139,16 @@
     const canvasContext = canvas.getContext("2d");
 
     let pdfjsLibraryPromise = null;
+    let pdfjsLibrary = null;
     let pdfDocument = null;
     let renderTask = null;
+    let textLayerTask = null;
+    let textContentCache = new Map();
+    let searchIndex = [];
+    let searchIndexing = false;
+    let searchQuery = "";
+    let searchMatches = [];
+    let selectedSearchMatchIndex = -1;
     let currentLoadId = 0;
     let currentPageNumber = 1;
     let currentScale = 1;
@@ -1049,6 +1211,38 @@
 
     const formatZoom = () => `${Math.round(currentScale * 100)}%`;
 
+    const updateSearchControls = () => {
+      const hasDocument = Boolean(pdfDocument);
+      const hasQuery = searchQuery.length > 0;
+      const hasMatches = searchMatches.length > 0;
+
+      searchInput.disabled = !hasDocument;
+      previousMatchButton.disabled = !hasDocument || !hasMatches || isRendering;
+      nextMatchButton.disabled = !hasDocument || !hasMatches || isRendering;
+
+      if (!hasDocument || !hasQuery) {
+        searchCount.value = "0 of 0";
+        searchCount.textContent = "0 of 0";
+        return;
+      }
+
+      if (searchIndexing && !hasMatches) {
+        searchCount.value = "Indexing";
+        searchCount.textContent = "Indexing";
+        return;
+      }
+
+      if (!hasMatches) {
+        searchCount.value = "No matches";
+        searchCount.textContent = "No matches";
+        return;
+      }
+
+      const selectedMatch = selectedSearchMatchIndex + 1;
+      searchCount.value = `${selectedMatch} of ${searchMatches.length}`;
+      searchCount.textContent = `${selectedMatch} of ${searchMatches.length}`;
+    };
+
     const updateControls = () => {
       const hasDocument = Boolean(pdfDocument);
       const pageCount = pdfDocument ? pdfDocument.numPages : 0;
@@ -1066,6 +1260,7 @@
       fitWidthButton.setAttribute("aria-pressed", String(hasDocument && fitWidthEnabled));
       zoomLevel.value = fitWidthEnabled ? `Fit width ${formatZoom()}` : formatZoom();
       zoomLevel.textContent = fitWidthEnabled ? `Fit width ${formatZoom()}` : formatZoom();
+      updateSearchControls();
       syncOutlineSidebar();
 
       if (hasDocument) {
@@ -1078,8 +1273,43 @@
       canvas.width = 0;
       canvas.height = 0;
       canvas.removeAttribute("style");
+      clearTextLayer();
       setStatus("");
       updateControls();
+    };
+
+    const clearTextLayer = () => {
+      if (textLayerTask) {
+        try {
+          textLayerTask.cancel();
+        } catch (error) {
+          // A completed text layer can be safely ignored.
+        }
+
+        textLayerTask = null;
+      }
+
+      textLayerContainer.replaceChildren();
+      searchHighlightLayer.replaceChildren();
+      textLayerContainer.removeAttribute("style");
+      searchHighlightLayer.removeAttribute("style");
+      pageShell.removeAttribute("style");
+    };
+
+    const resetSearchState = ({ clearInput = true } = {}) => {
+      textContentCache = new Map();
+      searchIndex = [];
+      searchIndexing = false;
+      searchQuery = "";
+      searchMatches = [];
+      selectedSearchMatchIndex = -1;
+
+      if (clearInput) {
+        searchInput.value = "";
+      }
+
+      searchHighlightLayer.replaceChildren();
+      updateSearchControls();
     };
 
     const cancelRender = async () => {
@@ -1103,6 +1333,8 @@
     const closeDocument = async () => {
       currentLoadId += 1;
       await cancelRender();
+      clearTextLayer();
+      resetSearchState();
 
       if (pdfDocument) {
         await pdfDocument.destroy();
@@ -1127,6 +1359,7 @@
         pdfjsLibraryPromise = import(PDFJS_ENTRY)
           .then((pdfjs) => {
             pdfjs.GlobalWorkerOptions.workerSrc = getAssetUrl(PDFJS_WORKER);
+            pdfjsLibrary = pdfjs;
             return pdfjs;
           })
           .catch((error) => {
@@ -1164,12 +1397,394 @@
       return Math.min(Math.max(currentScale, MIN_SCALE), MAX_SCALE);
     };
 
+    const normalizeForSearch = (value, options = {}) => {
+      const includeMap = Boolean(options.includeMap);
+      const map = includeMap ? [] : null;
+      let normalized = "";
+      let pendingWhitespaceIndex = null;
+
+      const appendNormalized = (text, rawIndex) => {
+        for (let index = 0; index < text.length; index += 1) {
+          normalized += text[index];
+
+          if (includeMap) {
+            map.push(rawIndex);
+          }
+        }
+      };
+
+      for (let index = 0; index < value.length; index += 1) {
+        const character = value[index];
+
+        if (/\s/.test(character)) {
+          if (normalized.length > 0 && pendingWhitespaceIndex === null) {
+            pendingWhitespaceIndex = index;
+          }
+
+          continue;
+        }
+
+        if (pendingWhitespaceIndex !== null) {
+          normalized += " ";
+
+          if (includeMap) {
+            map.push(pendingWhitespaceIndex);
+          }
+
+          pendingWhitespaceIndex = null;
+        }
+
+        appendNormalized(character.toLowerCase(), index);
+      }
+
+      return includeMap
+        ? { text: normalized, map }
+        : { text: normalized };
+    };
+
+    const buildSearchPage = (pageNumber, textContent) => {
+      const items = Array.isArray(textContent.items) ? textContent.items : [];
+      const segments = [];
+      let rawText = "";
+      let textItemIndex = 0;
+
+      items.forEach((item) => {
+        if (typeof item.str !== "string") {
+          return;
+        }
+
+        const start = rawText.length;
+        rawText += item.str;
+        const end = rawText.length;
+
+        if (end > start) {
+          segments.push({
+            textItemIndex,
+            start,
+            end,
+          });
+        }
+
+        textItemIndex += 1;
+
+        if (item.hasEOL) {
+          rawText += "\n";
+        }
+      });
+
+      const { text, map } = normalizeForSearch(rawText, { includeMap: true });
+
+      return {
+        pageNumber,
+        rawText,
+        normalizedText: text,
+        normalizedToRaw: map,
+        segments,
+      };
+    };
+
+    const getPageTextContent = (pageNumber, page = null) => {
+      if (textContentCache.has(pageNumber)) {
+        return textContentCache.get(pageNumber);
+      }
+
+      const textContentPromise = (page ? Promise.resolve(page) : pdfDocument.getPage(pageNumber))
+        .then((pdfPage) => pdfPage.getTextContent())
+        .catch((error) => {
+          textContentCache.delete(pageNumber);
+          throw error;
+        });
+
+      textContentCache.set(pageNumber, textContentPromise);
+      return textContentPromise;
+    };
+
+    const findMatchesInPage = (pageSearch, query) => {
+      const matches = [];
+      let searchFrom = 0;
+
+      while (searchFrom < pageSearch.normalizedText.length) {
+        const matchStart = pageSearch.normalizedText.indexOf(query, searchFrom);
+
+        if (matchStart === -1) {
+          break;
+        }
+
+        const matchEnd = matchStart + query.length;
+        const rawStart = pageSearch.normalizedToRaw[matchStart];
+        const rawEnd = pageSearch.normalizedToRaw[matchEnd - 1] + 1;
+
+        if (Number.isInteger(rawStart) && Number.isInteger(rawEnd) && rawEnd > rawStart) {
+          matches.push({
+            pageNumber: pageSearch.pageNumber,
+            normalizedStart: matchStart,
+            normalizedEnd: matchEnd,
+            rawStart,
+            rawEnd,
+          });
+        }
+
+        searchFrom = matchEnd;
+      }
+
+      return matches;
+    };
+
+    const createHighlightRange = (segment, match, textDivs) => {
+      const textDiv = textDivs[segment.textItemIndex];
+      const textNode = textDiv && textDiv.firstChild;
+
+      if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
+        return null;
+      }
+
+      const textLength = textNode.textContent.length;
+      const startOffset = Math.max(0, match.rawStart - segment.start);
+      const endOffset = Math.min(textLength, match.rawEnd - segment.start);
+
+      if (endOffset <= startOffset) {
+        return null;
+      }
+
+      const range = document.createRange();
+      range.setStart(textNode, startOffset);
+      range.setEnd(textNode, endOffset);
+      return range;
+    };
+
+    const applySearchHighlights = (options = {}) => {
+      const scrollToCurrent = Boolean(options.scrollToCurrent);
+      searchHighlightLayer.replaceChildren();
+
+      if (!searchQuery || searchMatches.length === 0 || !textLayerTask) {
+        return;
+      }
+
+      const pageSearch = searchIndex[currentPageNumber - 1];
+
+      if (!pageSearch) {
+        return;
+      }
+
+      const textDivs = textLayerTask.textDivs || [];
+      const layerRect = searchHighlightLayer.getBoundingClientRect();
+      const fragment = document.createDocumentFragment();
+
+      searchMatches.forEach((match, matchIndex) => {
+        if (match.pageNumber !== currentPageNumber) {
+          return;
+        }
+
+        const isCurrent = matchIndex === selectedSearchMatchIndex;
+        const matchingSegments = pageSearch.segments.filter((segment) => (
+          segment.end > match.rawStart && segment.start < match.rawEnd
+        ));
+
+        matchingSegments.forEach((segment) => {
+          const range = createHighlightRange(segment, match, textDivs);
+
+          if (!range) {
+            return;
+          }
+
+          Array.from(range.getClientRects()).forEach((rect) => {
+            if (rect.width <= 0 || rect.height <= 0) {
+              return;
+            }
+
+            const highlight = document.createElement("div");
+            highlight.className = isCurrent
+              ? "search-highlight current"
+              : "search-highlight";
+            highlight.style.left = `${rect.left - layerRect.left}px`;
+            highlight.style.top = `${rect.top - layerRect.top}px`;
+            highlight.style.width = `${rect.width}px`;
+            highlight.style.height = `${rect.height}px`;
+            fragment.append(highlight);
+          });
+
+          range.detach?.();
+        });
+      });
+
+      searchHighlightLayer.append(fragment);
+
+      if (scrollToCurrent) {
+        requestAnimationFrame(() => {
+          searchHighlightLayer
+            .querySelector(".search-highlight.current")
+            ?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+        });
+      }
+    };
+
+    const runSearch = (options = {}) => {
+      const preserveSelection = Boolean(options.preserveSelection);
+      const updateHighlights = options.updateHighlights !== false;
+      const previousMatch = preserveSelection
+        ? searchMatches[selectedSearchMatchIndex]
+        : null;
+
+      searchQuery = normalizeForSearch(searchInput.value).text;
+
+      if (!searchQuery) {
+        searchMatches = [];
+        selectedSearchMatchIndex = -1;
+        updateSearchControls();
+        searchHighlightLayer.replaceChildren();
+        return;
+      }
+
+      const nextMatches = [];
+
+      searchIndex.forEach((pageSearch) => {
+        if (pageSearch) {
+          nextMatches.push(...findMatchesInPage(pageSearch, searchQuery));
+        }
+      });
+
+      searchMatches = nextMatches;
+
+      if (searchMatches.length === 0) {
+        selectedSearchMatchIndex = -1;
+      } else if (previousMatch) {
+        const preservedIndex = searchMatches.findIndex((match) => (
+          match.pageNumber === previousMatch.pageNumber &&
+          match.rawStart === previousMatch.rawStart &&
+          match.rawEnd === previousMatch.rawEnd
+        ));
+
+        selectedSearchMatchIndex = preservedIndex >= 0
+          ? preservedIndex
+          : Math.min(selectedSearchMatchIndex, searchMatches.length - 1);
+      } else {
+        selectedSearchMatchIndex = 0;
+      }
+
+      updateSearchControls();
+
+      if (updateHighlights) {
+        applySearchHighlights();
+      }
+    };
+
+    const renderTextLayerForPage = async (page, viewport, pageNumber, loadId) => {
+      if (!pdfjsLibrary || typeof pdfjsLibrary.TextLayer !== "function") {
+        setStatus("Text selection is unavailable in this PDF.js build.");
+        return;
+      }
+
+      try {
+        const textContent = await getPageTextContent(pageNumber, page);
+
+        if (!pdfDocument || loadId !== currentLoadId || pageNumber !== currentPageNumber) {
+          return;
+        }
+
+        if (!searchIndex[pageNumber - 1]) {
+          searchIndex[pageNumber - 1] = buildSearchPage(pageNumber, textContent);
+
+          if (searchQuery) {
+            runSearch({ preserveSelection: true, updateHighlights: false });
+          }
+        }
+
+        textLayerContainer.replaceChildren();
+        searchHighlightLayer.replaceChildren();
+
+        const layer = new pdfjsLibrary.TextLayer({
+          textContentSource: textContent,
+          container: textLayerContainer,
+          viewport,
+        });
+
+        textLayerTask = layer;
+        await layer.render();
+
+        if (
+          !pdfDocument ||
+          loadId !== currentLoadId ||
+          pageNumber !== currentPageNumber ||
+          textLayerTask !== layer
+        ) {
+          return;
+        }
+
+        if (searchQuery) {
+          runSearch({ preserveSelection: true });
+        } else {
+          applySearchHighlights();
+        }
+      } catch (error) {
+        if (error && error.name === "AbortException") {
+          return;
+        }
+
+        if (loadId === currentLoadId) {
+          textLayerTask = null;
+          textLayerContainer.replaceChildren();
+          searchHighlightLayer.replaceChildren();
+          setStatus("Text selection is unavailable for this page.");
+        }
+      }
+    };
+
+    const startTextIndexing = async (loadId) => {
+      if (!pdfDocument || loadId !== currentLoadId) {
+        return;
+      }
+
+      const activeDocument = pdfDocument;
+      searchIndexing = true;
+      updateSearchControls();
+
+      for (let pageNumber = 1; pageNumber <= activeDocument.numPages; pageNumber += 1) {
+        if (!pdfDocument || pdfDocument !== activeDocument || loadId !== currentLoadId) {
+          return;
+        }
+
+        if (!searchIndex[pageNumber - 1]) {
+          try {
+            const page = await activeDocument.getPage(pageNumber);
+            const textContent = await getPageTextContent(pageNumber, page);
+
+            if (!pdfDocument || pdfDocument !== activeDocument || loadId !== currentLoadId) {
+              return;
+            }
+
+            searchIndex[pageNumber - 1] = buildSearchPage(pageNumber, textContent);
+          } catch (error) {
+            if (!pdfDocument || pdfDocument !== activeDocument || loadId !== currentLoadId) {
+              return;
+            }
+
+            searchIndex[pageNumber - 1] = buildSearchPage(pageNumber, { items: [] });
+          }
+
+          if (searchQuery) {
+            runSearch({ preserveSelection: true });
+          }
+        }
+
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0);
+        });
+      }
+
+      if (pdfDocument === activeDocument && loadId === currentLoadId) {
+        searchIndexing = false;
+        runSearch({ preserveSelection: true });
+        updateSearchControls();
+      }
+    };
+
     const renderPage = async (pageNumber, loadId) => {
       if (!pdfDocument || loadId !== currentLoadId) {
         return;
       }
 
       await cancelRender();
+      clearTextLayer();
       isRendering = true;
       updateControls();
 
@@ -1192,11 +1807,19 @@
       const scale = getRenderScale(page);
       const viewport = page.getViewport({ scale });
       const outputScale = window.devicePixelRatio || 1;
+      const viewportWidth = Math.floor(viewport.width);
+      const viewportHeight = Math.floor(viewport.height);
 
       canvas.width = Math.floor(viewport.width * outputScale);
       canvas.height = Math.floor(viewport.height * outputScale);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      canvas.style.width = `${viewportWidth}px`;
+      canvas.style.height = `${viewportHeight}px`;
+      pageShell.style.width = `${viewportWidth}px`;
+      pageShell.style.height = `${viewportHeight}px`;
+      textLayerContainer.style.width = `${viewportWidth}px`;
+      textLayerContainer.style.height = `${viewportHeight}px`;
+      searchHighlightLayer.style.width = `${viewportWidth}px`;
+      searchHighlightLayer.style.height = `${viewportHeight}px`;
 
       const transform = outputScale === 1
         ? null
@@ -1212,6 +1835,10 @@
 
       try {
         await task.promise;
+
+        if (loadId === currentLoadId && pdfDocument) {
+          await renderTextLayerForPage(page, viewport, pageNumber, loadId);
+        }
       } catch (error) {
         if (error && error.name === "RenderingCancelledException") {
           return;
@@ -1252,6 +1879,64 @@
       currentPageNumber = nextPage;
       updateControls();
       await renderCurrentPage();
+    };
+
+    const goToSearchMatch = async (matchIndex) => {
+      if (!pdfDocument || isRendering || searchMatches.length === 0) {
+        updateSearchControls();
+        return;
+      }
+
+      selectedSearchMatchIndex = (
+        (matchIndex % searchMatches.length) + searchMatches.length
+      ) % searchMatches.length;
+
+      const match = searchMatches[selectedSearchMatchIndex];
+      updateSearchControls();
+
+      if (match.pageNumber !== currentPageNumber) {
+        await goToPage(match.pageNumber);
+      }
+
+      applySearchHighlights({ scrollToCurrent: true });
+      updateSearchControls();
+      setStatus(
+        `Match ${selectedSearchMatchIndex + 1} of ${searchMatches.length} - page ${match.pageNumber}`
+      );
+    };
+
+    const getAdjacentSearchMatchIndex = (direction) => {
+      if (searchMatches.length === 0) {
+        return -1;
+      }
+
+      if (selectedSearchMatchIndex < 0) {
+        return direction > 0 ? 0 : searchMatches.length - 1;
+      }
+
+      const selectedMatch = searchMatches[selectedSearchMatchIndex];
+
+      if (selectedMatch && selectedMatch.pageNumber !== currentPageNumber) {
+        return selectedSearchMatchIndex;
+      }
+
+      return selectedSearchMatchIndex + direction;
+    };
+
+    const goToNextSearchMatch = () => {
+      const matchIndex = getAdjacentSearchMatchIndex(1);
+
+      if (matchIndex >= 0) {
+        goToSearchMatch(matchIndex);
+      }
+    };
+
+    const goToPreviousSearchMatch = () => {
+      const matchIndex = getAdjacentSearchMatchIndex(-1);
+
+      if (matchIndex >= 0) {
+        goToSearchMatch(matchIndex);
+      }
     };
 
     const setZoom = async (nextScale) => {
@@ -1664,6 +2349,8 @@
       currentLoadId = loadId;
 
       await cancelRender();
+      clearTextLayer();
+      resetSearchState();
 
       if (pdfDocument) {
         await pdfDocument.destroy();
@@ -1707,6 +2394,7 @@
         showCanvasState();
         updateControls();
         loadOutline(loadId);
+        startTextIndexing(loadId);
         await renderCurrentPage();
       } catch (error) {
         if (loadId !== currentLoadId) {
@@ -1714,6 +2402,8 @@
         }
 
         await cancelRender();
+        clearTextLayer();
+        resetSearchState();
 
         if (pdfDocument) {
           await pdfDocument.destroy();
@@ -1758,6 +2448,36 @@
       }
 
       goToPage(requestedPage);
+    });
+
+    searchInput.addEventListener("input", () => {
+      runSearch();
+    });
+
+    searchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+
+        if (event.shiftKey) {
+          goToPreviousSearchMatch();
+        } else {
+          goToNextSearchMatch();
+        }
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        searchInput.value = "";
+        runSearch();
+      }
+    });
+
+    previousMatchButton.addEventListener("click", () => {
+      goToPreviousSearchMatch();
+    });
+
+    nextMatchButton.addEventListener("click", () => {
+      goToNextSearchMatch();
     });
 
     zoomOutButton.addEventListener("click", () => {
@@ -1816,6 +2536,19 @@
     });
 
     window.addEventListener("keydown", (event) => {
+      if (
+        pdfDocument &&
+        !event.defaultPrevented &&
+        !event.altKey &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "f"
+      ) {
+        event.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+        return;
+      }
+
       if (
         !pdfDocument ||
         event.defaultPrevented ||
