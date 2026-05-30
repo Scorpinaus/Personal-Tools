@@ -670,6 +670,16 @@
       padding: 28px;
     }
 
+    .pages-container {
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 24px;
+      width: fit-content;
+      min-width: max-content;
+      margin-inline: auto;
+    }
+
     .page-shell {
       position: relative;
       display: flex;
@@ -677,6 +687,10 @@
       min-width: min-content;
       background: #ffffff;
       box-shadow: var(--paper-shadow);
+    }
+
+    .page-shell[hidden] {
+      display: none;
     }
 
     .pdf-canvas {
@@ -787,6 +801,9 @@
       background: #f7f9f8;
       font-size: 0.78rem;
       font-weight: 680;
+      max-width: min(100%, 48rem);
+      overflow: hidden;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
 
@@ -1065,6 +1082,21 @@
         <button
           class="icon-button"
           type="button"
+          id="twoPageToggleButton"
+          title="Two-page view"
+          aria-label="Two-page view"
+          aria-pressed="false"
+          disabled
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M4 5h7v14H4z"></path>
+            <path d="M13 5h7v14h-7z"></path>
+          </svg>
+        </button>
+
+        <button
+          class="icon-button"
+          type="button"
           id="bookmarksToggleButton"
           title="Show bookmarks"
           aria-label="Show bookmarks"
@@ -1131,10 +1163,12 @@
           </aside>
 
           <div class="canvas-scroll" id="canvasScroll">
-            <div class="page-shell" id="pageShell">
-              <canvas class="pdf-canvas" id="pdfCanvas"></canvas>
-              <div class="search-highlight-layer" id="searchHighlightLayer" aria-hidden="true"></div>
-              <div class="textLayer" id="textLayer"></div>
+            <div class="pages-container" id="pagesContainer">
+              <div class="page-shell" id="pageShell">
+                <canvas class="pdf-canvas" id="pdfCanvas"></canvas>
+                <div class="search-highlight-layer" id="searchHighlightLayer" aria-hidden="true"></div>
+                <div class="textLayer" id="textLayer"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1156,6 +1190,7 @@
     const MIN_SCALE = 0.25;
     const MAX_SCALE = 4;
     const ZOOM_STEP = 0.25;
+    const PAGE_SPREAD_GAP = 24;
     const SEARCHABLE_TEXT_MIN_CHARS = 12;
     const SEARCHABLE_TEXT_MIN_WORDS = 2;
     const BOOKMARK_STORAGE_PREFIX = "pdf-reader-bookmarks:v1:";
@@ -1173,6 +1208,7 @@
     const zoomOutButton = document.querySelector("#zoomOutButton");
     const zoomInButton = document.querySelector("#zoomInButton");
     const fitWidthButton = document.querySelector("#fitWidthButton");
+    const twoPageToggleButton = document.querySelector("#twoPageToggleButton");
     const bookmarksToggleButton = document.querySelector("#bookmarksToggleButton");
     const addBookmarkButton = document.querySelector("#addBookmarkButton");
     const zoomLevel = document.querySelector("#zoomLevel");
@@ -1183,6 +1219,7 @@
     const documentName = document.querySelector("#documentName");
     const canvasStage = document.querySelector("#canvasStage");
     const canvasScroll = document.querySelector("#canvasScroll");
+    const pagesContainer = document.querySelector("#pagesContainer");
     const pageShell = document.querySelector("#pageShell");
     const canvas = document.querySelector("#pdfCanvas");
     const textLayerContainer = document.querySelector("#textLayer");
@@ -1195,13 +1232,11 @@
     const userBookmarkList = document.querySelector("#userBookmarkList");
     const userBookmarkEmpty = document.querySelector("#userBookmarkEmpty");
     const readerBody = document.querySelector("#readerBody");
-    const canvasContext = canvas.getContext("2d");
 
     let pdfjsLibraryPromise = null;
     let pdfjsLibrary = null;
     let pdfDocument = null;
-    let renderTask = null;
-    let textLayerTask = null;
+    let pageViews = [];
     let textContentCache = new Map();
     let searchIndex = [];
     let searchIndexing = false;
@@ -1214,11 +1249,50 @@
     let currentPageNumber = 1;
     let currentScale = 1;
     let fitWidthEnabled = false;
+    let twoPageEnabled = false;
     let outlineSidebarOpen = false;
     let bookmarkStorageKey = null;
     let userBookmarks = [];
     let isRendering = false;
     let resizeFrame = null;
+
+    const createPageView = (elements = {}) => {
+      const shell = elements.shell || document.createElement("div");
+      const viewCanvas = elements.canvas || document.createElement("canvas");
+      const highlightLayer = elements.searchHighlightLayer || document.createElement("div");
+      const textLayer = elements.textLayerContainer || document.createElement("div");
+
+      shell.className = "page-shell";
+      viewCanvas.className = "pdf-canvas";
+      highlightLayer.className = "search-highlight-layer";
+      highlightLayer.setAttribute("aria-hidden", "true");
+      textLayer.className = "textLayer";
+
+      if (!elements.shell) {
+        shell.append(viewCanvas, highlightLayer, textLayer);
+        pagesContainer.append(shell);
+      }
+
+      return {
+        shell,
+        canvas: viewCanvas,
+        canvasContext: viewCanvas.getContext("2d"),
+        textLayerContainer: textLayer,
+        searchHighlightLayer: highlightLayer,
+        renderTask: null,
+        textLayerTask: null,
+        pageNumber: null,
+      };
+    };
+
+    pageViews = [
+      createPageView({
+        shell: pageShell,
+        canvas,
+        textLayerContainer,
+        searchHighlightLayer,
+      }),
+    ];
 
     const showEmptyState = (title, message) => {
       emptyTitle.textContent = title;
@@ -1230,6 +1304,34 @@
     const showCanvasState = () => {
       emptyState.hidden = true;
       canvasStage.hidden = false;
+    };
+
+    const getPageStep = () => twoPageEnabled ? 2 : 1;
+
+    const getVisiblePageNumbers = () => {
+      if (!pdfDocument) {
+        return [];
+      }
+
+      const pageNumbers = [clamp(currentPageNumber, 1, pdfDocument.numPages)];
+
+      if (twoPageEnabled && currentPageNumber < pdfDocument.numPages) {
+        pageNumbers.push(currentPageNumber + 1);
+      }
+
+      return pageNumbers;
+    };
+
+    const isPageVisible = (pageNumber) => getVisiblePageNumbers().includes(pageNumber);
+
+    const formatVisiblePageLabel = () => {
+      const pageNumbers = getVisiblePageNumbers();
+
+      if (pageNumbers.length > 1) {
+        return `Pages ${pageNumbers[0]}-${pageNumbers[pageNumbers.length - 1]}`;
+      }
+
+      return `Page ${pageNumbers[0] || currentPageNumber}`;
     };
 
     const setDocumentName = (name) => {
@@ -1252,9 +1354,16 @@
         return;
       }
 
-      const cachedAnalysis = pageAnalysisCache.get(currentPageNumber);
+      const pageNumbers = getVisiblePageNumbers();
+      const analyses = pageNumbers.map((pageNumber) => ({
+        pageNumber,
+        analysis: pageAnalysisCache.get(pageNumber),
+      }));
+      const pendingAnalysis = analyses.some(({ analysis }) => (
+        !analysis || typeof analysis.then === "function"
+      ));
 
-      if (!cachedAnalysis || typeof cachedAnalysis.then === "function") {
+      if (pendingAnalysis) {
         pageAnalysisStatus.className = "page-analysis-status is-pending";
         pageAnalysisStatus.textContent = pageAnalysisIndexing
           ? "Checking text..."
@@ -1263,9 +1372,26 @@
         return;
       }
 
-      pageAnalysisStatus.className = `page-analysis-status ${cachedAnalysis.className}`;
-      pageAnalysisStatus.textContent = cachedAnalysis.label;
-      pageAnalysisStatus.title = cachedAnalysis.description;
+      const classNamesByPriority = [
+        "is-ocr",
+        "is-limited",
+        "is-unknown",
+        "is-mixed",
+        "is-searchable",
+      ];
+      const visibleClassName = classNamesByPriority.find((className) => (
+        analyses.some(({ analysis }) => analysis.className === className)
+      )) || analyses[0].analysis.className;
+
+      pageAnalysisStatus.className = `page-analysis-status ${visibleClassName}`;
+      pageAnalysisStatus.textContent = analyses.length > 1
+        ? analyses.map(({ pageNumber, analysis }) => (
+          `P${pageNumber}: ${analysis.label}`
+        )).join(" | ")
+        : analyses[0].analysis.label;
+      pageAnalysisStatus.title = analyses.map(({ pageNumber, analysis }) => (
+        `Page ${pageNumber}: ${analysis.description}`
+      )).join("\n");
     };
 
     const syncOutlineSidebar = () => {
@@ -1275,6 +1401,13 @@
 
       outlinePanel.hidden = !isOpen;
       readerBody.classList.toggle("outline-hidden", !isOpen);
+      twoPageToggleButton.disabled = !hasDocument || isRendering || pdfDocument.numPages < 2;
+      twoPageToggleButton.title = twoPageEnabled ? "Single-page view" : "Two-page view";
+      twoPageToggleButton.setAttribute(
+        "aria-label",
+        twoPageEnabled ? "Single-page view" : "Two-page view"
+      );
+      twoPageToggleButton.setAttribute("aria-pressed", String(hasDocument && twoPageEnabled));
       bookmarksToggleButton.disabled = !hasDocument || isRendering;
       bookmarksToggleButton.title = label;
       bookmarksToggleButton.setAttribute("aria-label", label);
@@ -1331,9 +1464,10 @@
     const updateControls = () => {
       const hasDocument = Boolean(pdfDocument);
       const pageCount = pdfDocument ? pdfDocument.numPages : 0;
+      const pageStep = getPageStep();
 
       previousPageButton.disabled = !hasDocument || isRendering || currentPageNumber <= 1;
-      nextPageButton.disabled = !hasDocument || isRendering || currentPageNumber >= pageCount;
+      nextPageButton.disabled = !hasDocument || isRendering || currentPageNumber + pageStep > pageCount;
       pageNumberInput.disabled = !hasDocument || isRendering;
       pageNumberInput.max = String(Math.max(pageCount, 1));
       pageNumberInput.value = String(currentPageNumber);
@@ -1350,36 +1484,66 @@
       syncOutlineSidebar();
 
       if (hasDocument) {
-        setStatus(`Page ${currentPageNumber} of ${pageCount} - ${zoomLevel.textContent}`);
+        setStatus(`${formatVisiblePageLabel()} of ${pageCount} - ${zoomLevel.textContent}`);
       }
     };
 
+    const clearPageView = (view) => {
+      if (view.renderTask) {
+        view.renderTask.cancel();
+        view.renderTask = null;
+      }
+
+      if (view.textLayerTask) {
+        try {
+          view.textLayerTask.cancel();
+        } catch (error) {
+          // A completed text layer can be safely ignored.
+        }
+
+        view.textLayerTask = null;
+      }
+
+      view.canvasContext.clearRect(0, 0, view.canvas.width, view.canvas.height);
+      view.canvas.width = 0;
+      view.canvas.height = 0;
+      view.canvas.removeAttribute("style");
+      view.textLayerContainer.replaceChildren();
+      view.searchHighlightLayer.replaceChildren();
+      view.textLayerContainer.removeAttribute("style");
+      view.searchHighlightLayer.removeAttribute("style");
+      view.shell.removeAttribute("style");
+      view.pageNumber = null;
+    };
+
     const resetCanvas = () => {
-      canvasContext.clearRect(0, 0, canvas.width, canvas.height);
-      canvas.width = 0;
-      canvas.height = 0;
-      canvas.removeAttribute("style");
-      clearTextLayer();
+      pageViews.forEach((view, index) => {
+        clearPageView(view);
+        view.shell.hidden = index > 0;
+      });
       setStatus("");
       updateControls();
     };
 
     const clearTextLayer = () => {
-      if (textLayerTask) {
-        try {
-          textLayerTask.cancel();
-        } catch (error) {
-          // A completed text layer can be safely ignored.
+      pageViews.forEach((view) => {
+        if (view.textLayerTask) {
+          try {
+            view.textLayerTask.cancel();
+          } catch (error) {
+            // A completed text layer can be safely ignored.
+          }
+
+          view.textLayerTask = null;
         }
 
-        textLayerTask = null;
-      }
-
-      textLayerContainer.replaceChildren();
-      searchHighlightLayer.replaceChildren();
-      textLayerContainer.removeAttribute("style");
-      searchHighlightLayer.removeAttribute("style");
-      pageShell.removeAttribute("style");
+        view.textLayerContainer.replaceChildren();
+        view.searchHighlightLayer.replaceChildren();
+        view.textLayerContainer.removeAttribute("style");
+        view.searchHighlightLayer.removeAttribute("style");
+        view.shell.removeAttribute("style");
+        view.pageNumber = null;
+      });
     };
 
     const resetSearchState = ({ clearInput = true } = {}) => {
@@ -1394,7 +1558,9 @@
         searchInput.value = "";
       }
 
-      searchHighlightLayer.replaceChildren();
+      pageViews.forEach((view) => {
+        view.searchHighlightLayer.replaceChildren();
+      });
       updateSearchControls();
     };
 
@@ -1405,21 +1571,28 @@
     };
 
     const cancelRender = async () => {
-      if (!renderTask) {
-        return;
-      }
+      const tasks = pageViews
+        .map((view) => {
+          const task = view.renderTask;
+          view.renderTask = null;
 
-      const task = renderTask;
-      renderTask = null;
-      task.cancel();
+          if (task) {
+            task.cancel();
+          }
 
-      try {
-        await task.promise;
-      } catch (error) {
-        if (error && error.name !== "RenderingCancelledException") {
-          throw error;
+          return task;
+        })
+        .filter(Boolean);
+
+      await Promise.all(tasks.map(async (task) => {
+        try {
+          await task.promise;
+        } catch (error) {
+          if (error && error.name !== "RenderingCancelledException") {
+            throw error;
+          }
         }
-      }
+      }));
     };
 
     const closeDocument = async () => {
@@ -1437,6 +1610,7 @@
       currentPageNumber = 1;
       currentScale = 1;
       fitWidthEnabled = false;
+      twoPageEnabled = false;
       resetCanvas();
       clearOutline();
       pdfInput.value = "";
@@ -1476,18 +1650,18 @@
       return pdfjsLibraryPromise;
     };
 
-    const fitPageToViewport = (page) => {
-      const baseViewport = page.getViewport({ scale: 1 });
+    const fitPagesToViewport = (pages) => {
+      const baseWidth = pages.reduce((width, page) => (
+        width + page.getViewport({ scale: 1 }).width
+      ), 0);
+      const gapWidth = Math.max(pages.length - 1, 0) * PAGE_SPREAD_GAP;
       const availableWidth = Math.max(canvasScroll.clientWidth - 56, 260);
-      return Math.min(Math.max(availableWidth / baseViewport.width, 0.25), 2.25);
-    };
 
-    const getRenderScale = (page) => {
-      if (fitWidthEnabled) {
-        currentScale = fitPageToViewport(page);
-      }
-
-      return Math.min(Math.max(currentScale, MIN_SCALE), MAX_SCALE);
+      return clamp(
+        Math.max(availableWidth - gapWidth, 120) / Math.max(baseWidth, 1),
+        MIN_SCALE,
+        MAX_SCALE
+      );
     };
 
     const normalizeForSearch = (value, options = {}) => {
@@ -1797,7 +1971,7 @@
             activeCache.delete(pageNumber);
           }
 
-          if (pageNumber === currentPageNumber) {
+          if (isPageVisible(pageNumber)) {
             updatePageAnalysisStatus();
           }
         }
@@ -1878,64 +2052,72 @@
 
     const applySearchHighlights = (options = {}) => {
       const scrollToCurrent = Boolean(options.scrollToCurrent);
-      searchHighlightLayer.replaceChildren();
+      pageViews.forEach((view) => {
+        view.searchHighlightLayer.replaceChildren();
+      });
 
-      if (!searchQuery || searchMatches.length === 0 || !textLayerTask) {
+      if (!searchQuery || searchMatches.length === 0) {
         return;
       }
 
-      const pageSearch = searchIndex[currentPageNumber - 1];
-
-      if (!pageSearch) {
-        return;
-      }
-
-      const textDivs = textLayerTask.textDivs || [];
-      const layerRect = searchHighlightLayer.getBoundingClientRect();
-      const fragment = document.createDocumentFragment();
-
-      searchMatches.forEach((match, matchIndex) => {
-        if (match.pageNumber !== currentPageNumber) {
+      pageViews.forEach((view) => {
+        if (!view.pageNumber || !view.textLayerTask || view.shell.hidden) {
           return;
         }
 
-        const isCurrent = matchIndex === selectedSearchMatchIndex;
-        const matchingSegments = pageSearch.segments.filter((segment) => (
-          segment.end > match.rawStart && segment.start < match.rawEnd
-        ));
+        const pageSearch = searchIndex[view.pageNumber - 1];
 
-        matchingSegments.forEach((segment) => {
-          const range = createHighlightRange(segment, match, textDivs);
+        if (!pageSearch) {
+          return;
+        }
 
-          if (!range) {
+        const textDivs = view.textLayerTask.textDivs || [];
+        const layerRect = view.searchHighlightLayer.getBoundingClientRect();
+        const fragment = document.createDocumentFragment();
+
+        searchMatches.forEach((match, matchIndex) => {
+          if (match.pageNumber !== view.pageNumber) {
             return;
           }
 
-          Array.from(range.getClientRects()).forEach((rect) => {
-            if (rect.width <= 0 || rect.height <= 0) {
+          const isCurrent = matchIndex === selectedSearchMatchIndex;
+          const matchingSegments = pageSearch.segments.filter((segment) => (
+            segment.end > match.rawStart && segment.start < match.rawEnd
+          ));
+
+          matchingSegments.forEach((segment) => {
+            const range = createHighlightRange(segment, match, textDivs);
+
+            if (!range) {
               return;
             }
 
-            const highlight = document.createElement("div");
-            highlight.className = isCurrent
-              ? "search-highlight current"
-              : "search-highlight";
-            highlight.style.left = `${rect.left - layerRect.left}px`;
-            highlight.style.top = `${rect.top - layerRect.top}px`;
-            highlight.style.width = `${rect.width}px`;
-            highlight.style.height = `${rect.height}px`;
-            fragment.append(highlight);
+            Array.from(range.getClientRects()).forEach((rect) => {
+              if (rect.width <= 0 || rect.height <= 0) {
+                return;
+              }
+
+              const highlight = document.createElement("div");
+              highlight.className = isCurrent
+                ? "search-highlight current"
+                : "search-highlight";
+              highlight.style.left = `${rect.left - layerRect.left}px`;
+              highlight.style.top = `${rect.top - layerRect.top}px`;
+              highlight.style.width = `${rect.width}px`;
+              highlight.style.height = `${rect.height}px`;
+              fragment.append(highlight);
+            });
+
+            range.detach?.();
           });
-
-          range.detach?.();
         });
-      });
 
-      searchHighlightLayer.append(fragment);
+        view.searchHighlightLayer.append(fragment);
+      });
 
       if (scrollToCurrent) {
         requestAnimationFrame(() => {
-          searchHighlightLayer
+          pagesContainer
             .querySelector(".search-highlight.current")
             ?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
         });
@@ -1955,7 +2137,9 @@
         searchMatches = [];
         selectedSearchMatchIndex = -1;
         updateSearchControls();
-        searchHighlightLayer.replaceChildren();
+        pageViews.forEach((view) => {
+          view.searchHighlightLayer.replaceChildren();
+        });
         return;
       }
 
@@ -1992,7 +2176,7 @@
       }
     };
 
-    const renderTextLayerForPage = async (page, viewport, pageNumber, loadId) => {
+    const renderTextLayerForPage = async (view, page, viewport, pageNumber, loadId) => {
       if (!pdfjsLibrary || typeof pdfjsLibrary.TextLayer !== "function") {
         setStatus("Text selection is unavailable in this PDF.js build.");
         return;
@@ -2001,7 +2185,12 @@
       try {
         const textContent = await getPageTextContent(pageNumber, page);
 
-        if (!pdfDocument || loadId !== currentLoadId || pageNumber !== currentPageNumber) {
+        if (
+          !pdfDocument ||
+          loadId !== currentLoadId ||
+          view.pageNumber !== pageNumber ||
+          view.shell.hidden
+        ) {
           return;
         }
 
@@ -2018,23 +2207,24 @@
           updatePageAnalysisStatus();
         }
 
-        textLayerContainer.replaceChildren();
-        searchHighlightLayer.replaceChildren();
+        view.textLayerContainer.replaceChildren();
+        view.searchHighlightLayer.replaceChildren();
 
         const layer = new pdfjsLibrary.TextLayer({
           textContentSource: textContent,
-          container: textLayerContainer,
+          container: view.textLayerContainer,
           viewport,
         });
 
-        textLayerTask = layer;
+        view.textLayerTask = layer;
         await layer.render();
 
         if (
           !pdfDocument ||
           loadId !== currentLoadId ||
-          pageNumber !== currentPageNumber ||
-          textLayerTask !== layer
+          view.pageNumber !== pageNumber ||
+          view.textLayerTask !== layer ||
+          view.shell.hidden
         ) {
           return;
         }
@@ -2050,9 +2240,9 @@
         }
 
         if (loadId === currentLoadId) {
-          textLayerTask = null;
-          textLayerContainer.replaceChildren();
-          searchHighlightLayer.replaceChildren();
+          view.textLayerTask = null;
+          view.textLayerContainer.replaceChildren();
+          view.searchHighlightLayer.replaceChildren();
           setStatus("Text selection is unavailable for this page.");
         }
       }
@@ -2116,7 +2306,83 @@
       }
     };
 
-    const renderPage = async (pageNumber, loadId) => {
+    const ensurePageViews = (visibleCount) => {
+      while (pageViews.length < visibleCount) {
+        pageViews.push(createPageView());
+      }
+
+      pageViews.forEach((view, index) => {
+        const shouldShow = index < visibleCount;
+
+        if (!shouldShow) {
+          clearPageView(view);
+        }
+
+        view.shell.hidden = !shouldShow;
+      });
+
+      return pageViews.slice(0, visibleCount);
+    };
+
+    const renderPageView = async (view, page, pageNumber, scale, loadId) => {
+      view.pageNumber = pageNumber;
+      view.textLayerTask = null;
+      view.textLayerContainer.replaceChildren();
+      view.searchHighlightLayer.replaceChildren();
+
+      const viewport = page.getViewport({ scale });
+      const outputScale = window.devicePixelRatio || 1;
+      const viewportWidth = Math.floor(viewport.width);
+      const viewportHeight = Math.floor(viewport.height);
+
+      view.canvas.width = Math.floor(viewport.width * outputScale);
+      view.canvas.height = Math.floor(viewport.height * outputScale);
+      view.canvas.style.width = `${viewportWidth}px`;
+      view.canvas.style.height = `${viewportHeight}px`;
+      view.shell.style.width = `${viewportWidth}px`;
+      view.shell.style.height = `${viewportHeight}px`;
+      view.textLayerContainer.style.width = `${viewportWidth}px`;
+      view.textLayerContainer.style.height = `${viewportHeight}px`;
+      view.searchHighlightLayer.style.width = `${viewportWidth}px`;
+      view.searchHighlightLayer.style.height = `${viewportHeight}px`;
+
+      const transform = outputScale === 1
+        ? null
+        : [outputScale, 0, 0, outputScale, 0, 0];
+
+      const task = page.render({
+        canvasContext: view.canvasContext,
+        viewport,
+        transform,
+      });
+
+      view.renderTask = task;
+
+      try {
+        await task.promise;
+
+        if (
+          loadId === currentLoadId &&
+          pdfDocument &&
+          view.pageNumber === pageNumber &&
+          !view.shell.hidden
+        ) {
+          await renderTextLayerForPage(view, page, viewport, pageNumber, loadId);
+        }
+      } catch (error) {
+        if (error && error.name === "RenderingCancelledException") {
+          return;
+        }
+
+        throw error;
+      } finally {
+        if (view.renderTask === task) {
+          view.renderTask = null;
+        }
+      }
+    };
+
+    const renderVisiblePages = async (loadId) => {
       if (!pdfDocument || loadId !== currentLoadId) {
         return;
       }
@@ -2126,68 +2392,38 @@
       isRendering = true;
       updateControls();
 
-      let page;
+      const pageNumbers = getVisiblePageNumbers();
+      const views = ensurePageViews(pageNumbers.length);
+      let pages;
 
       try {
-        page = await pdfDocument.getPage(pageNumber);
+        pages = await Promise.all(pageNumbers.map((pageNumber) => (
+          pdfDocument.getPage(pageNumber)
+        )));
       } catch (error) {
         isRendering = false;
         updateControls();
         throw error;
       }
 
-      if (loadId !== currentLoadId) {
+      if (loadId !== currentLoadId || !pdfDocument) {
         isRendering = false;
         updateControls();
         return;
       }
 
-      const scale = getRenderScale(page);
-      const viewport = page.getViewport({ scale });
-      const outputScale = window.devicePixelRatio || 1;
-      const viewportWidth = Math.floor(viewport.width);
-      const viewportHeight = Math.floor(viewport.height);
+      if (fitWidthEnabled) {
+        currentScale = fitPagesToViewport(pages);
+      }
 
-      canvas.width = Math.floor(viewport.width * outputScale);
-      canvas.height = Math.floor(viewport.height * outputScale);
-      canvas.style.width = `${viewportWidth}px`;
-      canvas.style.height = `${viewportHeight}px`;
-      pageShell.style.width = `${viewportWidth}px`;
-      pageShell.style.height = `${viewportHeight}px`;
-      textLayerContainer.style.width = `${viewportWidth}px`;
-      textLayerContainer.style.height = `${viewportHeight}px`;
-      searchHighlightLayer.style.width = `${viewportWidth}px`;
-      searchHighlightLayer.style.height = `${viewportHeight}px`;
-
-      const transform = outputScale === 1
-        ? null
-        : [outputScale, 0, 0, outputScale, 0, 0];
-
-      const task = page.render({
-        canvasContext,
-        viewport,
-        transform,
-      });
-
-      renderTask = task;
+      const scale = clamp(currentScale, MIN_SCALE, MAX_SCALE);
+      currentScale = scale;
 
       try {
-        await task.promise;
-
-        if (loadId === currentLoadId && pdfDocument) {
-          await renderTextLayerForPage(page, viewport, pageNumber, loadId);
-        }
-      } catch (error) {
-        if (error && error.name === "RenderingCancelledException") {
-          return;
-        }
-
-        throw error;
+        await Promise.all(pages.map((page, index) => (
+          renderPageView(views[index], page, pageNumbers[index], scale, loadId)
+        )));
       } finally {
-        if (renderTask === task) {
-          renderTask = null;
-        }
-
         isRendering = false;
         updateControls();
       }
@@ -2197,7 +2433,7 @@
       }
     };
 
-    const renderCurrentPage = () => renderPage(currentPageNumber, currentLoadId);
+    const renderCurrentPage = () => renderVisiblePages(currentLoadId);
 
     const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
@@ -2232,7 +2468,7 @@
       const match = searchMatches[selectedSearchMatchIndex];
       updateSearchControls();
 
-      if (match.pageNumber !== currentPageNumber) {
+      if (!isPageVisible(match.pageNumber)) {
         await goToPage(match.pageNumber);
       }
 
@@ -2254,7 +2490,7 @@
 
       const selectedMatch = searchMatches[selectedSearchMatchIndex];
 
-      if (selectedMatch && selectedMatch.pageNumber !== currentPageNumber) {
+      if (selectedMatch && !isPageVisible(selectedMatch.pageNumber)) {
         return selectedSearchMatchIndex;
       }
 
@@ -2294,6 +2530,17 @@
       }
 
       fitWidthEnabled = true;
+      updateControls();
+      await renderCurrentPage();
+    };
+
+    const setTwoPageMode = async (enabled) => {
+      if (!pdfDocument || isRendering || twoPageEnabled === enabled) {
+        return;
+      }
+
+      twoPageEnabled = enabled;
+      currentPageNumber = clamp(currentPageNumber, 1, pdfDocument.numPages);
       updateControls();
       await renderCurrentPage();
     };
@@ -2701,6 +2948,7 @@
       currentPageNumber = 1;
       currentScale = 1;
       fitWidthEnabled = false;
+      twoPageEnabled = false;
       updateControls();
       setDocumentName(file.name);
       closeButton.disabled = false;
@@ -2728,6 +2976,7 @@
         pdfDocument = loadedDocument;
         currentPageNumber = 1;
         fitWidthEnabled = false;
+        twoPageEnabled = false;
         loadUserBookmarks(file);
 
         showCanvasState();
@@ -2755,6 +3004,7 @@
         currentPageNumber = 1;
         currentScale = 1;
         fitWidthEnabled = false;
+        twoPageEnabled = false;
         closeButton.disabled = true;
         pdfInput.value = "";
         setDocumentName("No PDF open");
@@ -2772,11 +3022,11 @@
     });
 
     previousPageButton.addEventListener("click", () => {
-      goToPage(currentPageNumber - 1);
+      goToPage(currentPageNumber - getPageStep());
     });
 
     nextPageButton.addEventListener("click", () => {
-      goToPage(currentPageNumber + 1);
+      goToPage(currentPageNumber + getPageStep());
     });
 
     pageNumberInput.addEventListener("change", () => {
@@ -2830,6 +3080,10 @@
 
     fitWidthButton.addEventListener("click", () => {
       setFitWidth();
+    });
+
+    twoPageToggleButton.addEventListener("click", () => {
+      setTwoPageMode(!twoPageEnabled);
     });
 
     bookmarksToggleButton.addEventListener("click", () => {
@@ -2902,12 +3156,12 @@
 
       if (event.key === "ArrowLeft") {
         event.preventDefault();
-        goToPage(currentPageNumber - 1);
+        goToPage(currentPageNumber - getPageStep());
       }
 
       if (event.key === "ArrowRight") {
         event.preventDefault();
-        goToPage(currentPageNumber + 1);
+        goToPage(currentPageNumber + getPageStep());
       }
     });
 
