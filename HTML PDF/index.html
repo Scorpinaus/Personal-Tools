@@ -349,6 +349,10 @@
       min-height: 0;
     }
 
+    .reader-body.outline-hidden {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .outline-panel {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
@@ -389,6 +393,33 @@
       min-height: 0;
       overflow: auto;
       padding: 10px 8px 14px;
+    }
+
+    .bookmark-section {
+      display: grid;
+      gap: 6px;
+      padding: 8px 0 12px;
+    }
+
+    .bookmark-section + .bookmark-section {
+      border-top: 1px solid #dde4e0;
+    }
+
+    .bookmark-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 30px;
+      padding: 0 6px 0 8px;
+    }
+
+    .bookmark-section-title {
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 760;
+      line-height: 1;
+      text-transform: uppercase;
     }
 
     .outline-list {
@@ -452,6 +483,153 @@
 
     .outline-button.is-italic {
       font-style: italic;
+    }
+
+    .user-bookmark-list {
+      display: grid;
+      gap: 4px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .user-bookmark-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .user-bookmark-link {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      min-height: 34px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: var(--ink);
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+      transition:
+        background-color 140ms ease,
+        border-color 140ms ease,
+        color 140ms ease;
+    }
+
+    .user-bookmark-link:hover {
+      color: var(--accent-strong);
+      background: #ffffff;
+      border-color: #d6ddda;
+    }
+
+    .bookmark-title,
+    .bookmark-page {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .bookmark-title {
+      font-size: 0.84rem;
+      font-weight: 650;
+      line-height: 1.2;
+    }
+
+    .bookmark-page {
+      color: var(--muted);
+      font-size: 0.74rem;
+      line-height: 1.1;
+    }
+
+    .bookmark-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding-right: 2px;
+    }
+
+    .bookmark-action {
+      display: inline-grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      transition:
+        background-color 140ms ease,
+        border-color 140ms ease,
+        color 140ms ease;
+    }
+
+    .bookmark-action:hover {
+      color: var(--accent-strong);
+      background: #ffffff;
+      border-color: #d6ddda;
+    }
+
+    .bookmark-action.danger:hover {
+      color: var(--danger-strong);
+      border-color: rgba(161, 61, 52, 0.28);
+      background: #fff8f7;
+    }
+
+    .bookmark-action:disabled {
+      cursor: not-allowed;
+      opacity: 0.46;
+    }
+
+    .bookmark-action svg {
+      width: 15px;
+      height: 15px;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+    }
+
+    .bookmark-empty {
+      margin: 0;
+      padding: 3px 8px 8px;
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.35;
+    }
+
+    .bookmark-empty[hidden] {
+      display: none;
+    }
+
+    .bookmark-editor {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 4px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .bookmark-edit-input {
+      width: 100%;
+      height: 32px;
+      border: 1px solid #cdd5d1;
+      border-radius: 6px;
+      padding: 0 8px;
+      color: var(--ink);
+      background: #ffffff;
+      font-size: 0.84rem;
+    }
+
+    .bookmark-edit-input:focus-visible,
+    .user-bookmark-link:focus-visible,
+    .bookmark-action:focus-visible {
+      outline: 3px solid rgba(8, 127, 114, 0.2);
+      outline-offset: 1px;
     }
 
     .canvas-scroll {
@@ -539,6 +717,10 @@
         grid-template-rows: auto minmax(0, 1fr);
       }
 
+      .reader-body.outline-hidden {
+        grid-template-rows: minmax(0, 1fr);
+      }
+
       .outline-panel {
         max-height: 210px;
         border-right: 0;
@@ -587,7 +769,7 @@
       >
     </header>
 
-    <nav class="pdf-toolbar" aria-label="PDF page and zoom controls">
+    <nav class="pdf-toolbar" aria-label="PDF page, zoom, and view controls">
       <div class="control-group" aria-label="Page controls">
         <button
           class="icon-button"
@@ -680,6 +862,28 @@
           </svg>
         </button>
       </div>
+
+      <div class="control-group" aria-label="View controls">
+        <button
+          class="icon-button"
+          type="button"
+          id="bookmarksToggleButton"
+          title="Show bookmarks"
+          aria-label="Show bookmarks"
+          aria-controls="outlinePanel"
+          aria-expanded="false"
+          aria-pressed="false"
+          disabled
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M4 5h16"></path>
+            <path d="M4 12h10"></path>
+            <path d="M4 19h16"></path>
+            <path d="M18 9v10"></path>
+            <path d="m15 16 3 3 3-3"></path>
+          </svg>
+        </button>
+      </div>
     </nav>
 
     <section class="reader" aria-label="PDF document viewer">
@@ -691,14 +895,40 @@
       </div>
 
       <div class="canvas-stage" id="canvasStage" hidden>
-        <div class="reader-body">
+        <div class="reader-body outline-hidden" id="readerBody">
           <aside class="outline-panel" id="outlinePanel" aria-label="PDF bookmarks" hidden>
             <div class="outline-header">
               <strong class="outline-title">Bookmarks</strong>
               <span class="outline-status" id="outlineStatus">No bookmarks</span>
             </div>
             <div class="outline-scroll">
-              <ol class="outline-list" id="outlineList"></ol>
+              <section class="bookmark-section" aria-labelledby="userBookmarksTitle">
+                <div class="bookmark-section-header">
+                  <span class="bookmark-section-title" id="userBookmarksTitle">My bookmarks</span>
+                  <button
+                    class="bookmark-action"
+                    type="button"
+                    id="addBookmarkButton"
+                    title="Add current page"
+                    aria-label="Add current page"
+                    disabled
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                      <path d="M12 5v14"></path>
+                      <path d="M5 12h14"></path>
+                    </svg>
+                  </button>
+                </div>
+                <ol class="user-bookmark-list" id="userBookmarkList"></ol>
+                <p class="bookmark-empty" id="userBookmarkEmpty">No saved bookmarks</p>
+              </section>
+
+              <section class="bookmark-section" aria-labelledby="documentOutlineTitle">
+                <div class="bookmark-section-header">
+                  <span class="bookmark-section-title" id="documentOutlineTitle">Document outline</span>
+                </div>
+                <ol class="outline-list" id="outlineList"></ol>
+              </section>
             </div>
           </aside>
 
@@ -723,6 +953,7 @@
     const MIN_SCALE = 0.25;
     const MAX_SCALE = 4;
     const ZOOM_STEP = 0.25;
+    const BOOKMARK_STORAGE_PREFIX = "pdf-reader-bookmarks:v1:";
 
     const openButton = document.querySelector("#openButton");
     const closeButton = document.querySelector("#closeButton");
@@ -733,6 +964,8 @@
     const zoomOutButton = document.querySelector("#zoomOutButton");
     const zoomInButton = document.querySelector("#zoomInButton");
     const fitWidthButton = document.querySelector("#fitWidthButton");
+    const bookmarksToggleButton = document.querySelector("#bookmarksToggleButton");
+    const addBookmarkButton = document.querySelector("#addBookmarkButton");
     const zoomLevel = document.querySelector("#zoomLevel");
     const pdfInput = document.querySelector("#pdfInput");
     const emptyState = document.querySelector("#emptyState");
@@ -746,6 +979,9 @@
     const outlinePanel = document.querySelector("#outlinePanel");
     const outlineStatus = document.querySelector("#outlineStatus");
     const outlineList = document.querySelector("#outlineList");
+    const userBookmarkList = document.querySelector("#userBookmarkList");
+    const userBookmarkEmpty = document.querySelector("#userBookmarkEmpty");
+    const readerBody = document.querySelector("#readerBody");
     const canvasContext = canvas.getContext("2d");
 
     let pdfjsLibraryPromise = null;
@@ -755,6 +991,9 @@
     let currentPageNumber = 1;
     let currentScale = 1;
     let fitWidthEnabled = false;
+    let outlineSidebarOpen = false;
+    let bookmarkStorageKey = null;
+    let userBookmarks = [];
     let isRendering = false;
     let resizeFrame = null;
 
@@ -782,10 +1021,30 @@
       outlineStatus.textContent = message;
     };
 
+    const syncOutlineSidebar = () => {
+      const hasDocument = Boolean(pdfDocument);
+      const isOpen = hasDocument && outlineSidebarOpen;
+      const label = isOpen ? "Hide bookmarks" : "Show bookmarks";
+
+      outlinePanel.hidden = !isOpen;
+      readerBody.classList.toggle("outline-hidden", !isOpen);
+      bookmarksToggleButton.disabled = !hasDocument || isRendering;
+      bookmarksToggleButton.title = label;
+      bookmarksToggleButton.setAttribute("aria-label", label);
+      bookmarksToggleButton.setAttribute("aria-expanded", String(isOpen));
+      bookmarksToggleButton.setAttribute("aria-pressed", String(isOpen));
+      addBookmarkButton.disabled = !hasDocument || isRendering;
+    };
+
     const clearOutline = () => {
+      outlineSidebarOpen = false;
+      bookmarkStorageKey = null;
+      userBookmarks = [];
+      userBookmarkList.replaceChildren();
+      userBookmarkEmpty.hidden = false;
       outlineList.replaceChildren();
-      outlinePanel.hidden = true;
       setOutlineStatus("No bookmarks");
+      syncOutlineSidebar();
     };
 
     const formatZoom = () => `${Math.round(currentScale * 100)}%`;
@@ -807,6 +1066,7 @@
       fitWidthButton.setAttribute("aria-pressed", String(hasDocument && fitWidthEnabled));
       zoomLevel.value = fitWidthEnabled ? `Fit width ${formatZoom()}` : formatZoom();
       zoomLevel.textContent = fitWidthEnabled ? `Fit width ${formatZoom()}` : formatZoom();
+      syncOutlineSidebar();
 
       if (hasDocument) {
         setStatus(`Page ${currentPageNumber} of ${pageCount} - ${zoomLevel.textContent}`);
@@ -1015,6 +1275,239 @@
       await renderCurrentPage();
     };
 
+    const setOutlineSidebarOpen = async (isOpen) => {
+      if (!pdfDocument || isRendering) {
+        return;
+      }
+
+      outlineSidebarOpen = isOpen;
+      syncOutlineSidebar();
+
+      if (fitWidthEnabled) {
+        await renderCurrentPage();
+      }
+    };
+
+    const createBookmarkStorageKey = (file) => {
+      const identity = `${file.name}:${file.size}:${file.lastModified}`;
+      return `${BOOKMARK_STORAGE_PREFIX}${encodeURIComponent(identity)}`;
+    };
+
+    const createBookmarkId = () => {
+      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+      }
+
+      return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    };
+
+    const normalizeStoredBookmarks = (storedBookmarks) => {
+      if (!Array.isArray(storedBookmarks) || !pdfDocument) {
+        return [];
+      }
+
+      return storedBookmarks
+        .map((bookmark) => ({
+          id: typeof bookmark.id === "string" ? bookmark.id : createBookmarkId(),
+          title: typeof bookmark.title === "string" && bookmark.title.trim()
+            ? bookmark.title.trim()
+            : `Page ${bookmark.page}`,
+          page: Number.parseInt(bookmark.page, 10),
+        }))
+        .filter((bookmark) => Number.isInteger(bookmark.page))
+        .map((bookmark) => ({
+          ...bookmark,
+          page: clamp(bookmark.page, 1, pdfDocument.numPages),
+        }));
+    };
+
+    const loadUserBookmarks = (file) => {
+      bookmarkStorageKey = createBookmarkStorageKey(file);
+
+      try {
+        const storedValue = localStorage.getItem(bookmarkStorageKey);
+        userBookmarks = normalizeStoredBookmarks(JSON.parse(storedValue || "[]"));
+      } catch (error) {
+        userBookmarks = [];
+        setOutlineStatus("Saved bookmarks unavailable");
+      }
+
+      renderUserBookmarks();
+    };
+
+    const saveUserBookmarks = () => {
+      if (!bookmarkStorageKey) {
+        return;
+      }
+
+      try {
+        localStorage.setItem(bookmarkStorageKey, JSON.stringify(userBookmarks));
+      } catch (error) {
+        setOutlineStatus("Could not save bookmarks");
+      }
+    };
+
+    const createBookmarkActionButton = (label, paths, options = {}) => {
+      const button = document.createElement("button");
+      button.className = options.danger ? "bookmark-action danger" : "bookmark-action";
+      button.type = "button";
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      button.innerHTML = `
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          ${paths}
+        </svg>
+      `;
+      return button;
+    };
+
+    const renderUserBookmarkEditor = (bookmark, listItem) => {
+      listItem.replaceChildren();
+      listItem.className = "user-bookmark-item";
+
+      const editor = document.createElement("div");
+      editor.className = "bookmark-editor";
+
+      const input = document.createElement("input");
+      input.className = "bookmark-edit-input";
+      input.type = "text";
+      input.value = bookmark.title;
+      input.setAttribute("aria-label", "Bookmark title");
+
+      const actions = document.createElement("div");
+      actions.className = "bookmark-actions";
+
+      const saveButton = createBookmarkActionButton(
+        "Save bookmark",
+        '<path d="m5 12 4 4L19 6"></path>'
+      );
+      const cancelButton = createBookmarkActionButton(
+        "Cancel edit",
+        '<path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>'
+      );
+
+      const finishEdit = () => {
+        const title = input.value.trim() || `Page ${bookmark.page}`;
+        userBookmarks = userBookmarks.map((existingBookmark) => (
+          existingBookmark.id === bookmark.id
+            ? { ...existingBookmark, title }
+            : existingBookmark
+        ));
+        saveUserBookmarks();
+        renderUserBookmarks();
+        setOutlineStatus("Bookmark renamed");
+      };
+
+      saveButton.addEventListener("click", finishEdit);
+      cancelButton.addEventListener("click", renderUserBookmarks);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          finishEdit();
+        }
+
+        if (event.key === "Escape") {
+          event.preventDefault();
+          renderUserBookmarks();
+        }
+      });
+
+      actions.append(saveButton, cancelButton);
+      editor.append(input, actions);
+      listItem.append(editor);
+      input.focus();
+      input.select();
+    };
+
+    const renderUserBookmarks = () => {
+      userBookmarkList.replaceChildren();
+      userBookmarkEmpty.hidden = userBookmarks.length > 0;
+
+      userBookmarks.forEach((bookmark) => {
+        const listItem = document.createElement("li");
+        listItem.className = "user-bookmark-item";
+
+        const pageButton = document.createElement("button");
+        pageButton.className = "user-bookmark-link";
+        pageButton.type = "button";
+        pageButton.title = `Go to page ${bookmark.page}`;
+
+        const title = document.createElement("span");
+        title.className = "bookmark-title";
+        title.textContent = bookmark.title;
+
+        const page = document.createElement("span");
+        page.className = "bookmark-page";
+        page.textContent = `Page ${bookmark.page}`;
+
+        pageButton.append(title, page);
+        pageButton.addEventListener("click", async () => {
+          await goToPage(bookmark.page);
+          setOutlineStatus(`Page ${bookmark.page}`);
+        });
+
+        const actions = document.createElement("div");
+        actions.className = "bookmark-actions";
+
+        const editButton = createBookmarkActionButton(
+          "Edit bookmark",
+          '<path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>'
+        );
+        const removeButton = createBookmarkActionButton(
+          "Remove bookmark",
+          '<path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path>',
+          { danger: true }
+        );
+
+        editButton.addEventListener("click", () => {
+          renderUserBookmarkEditor(bookmark, listItem);
+        });
+
+        removeButton.addEventListener("click", () => {
+          userBookmarks = userBookmarks.filter((existingBookmark) => (
+            existingBookmark.id !== bookmark.id
+          ));
+          saveUserBookmarks();
+          renderUserBookmarks();
+          setOutlineStatus("Bookmark removed");
+        });
+
+        actions.append(editButton, removeButton);
+        listItem.append(pageButton, actions);
+        userBookmarkList.append(listItem);
+      });
+    };
+
+    const addCurrentPageBookmark = async () => {
+      if (!pdfDocument) {
+        return;
+      }
+
+      const bookmarksOnPage = userBookmarks.filter((bookmark) => (
+        bookmark.page === currentPageNumber
+      )).length;
+      const title = bookmarksOnPage === 0
+        ? `Page ${currentPageNumber}`
+        : `Page ${currentPageNumber} bookmark ${bookmarksOnPage + 1}`;
+
+      userBookmarks = [
+        ...userBookmarks,
+        {
+          id: createBookmarkId(),
+          title,
+          page: currentPageNumber,
+        },
+      ];
+
+      saveUserBookmarks();
+      renderUserBookmarks();
+      setOutlineStatus(`Saved page ${currentPageNumber}`);
+
+      if (!outlineSidebarOpen) {
+        await setOutlineSidebarOpen(true);
+      }
+    };
+
     const resolveDestinationPage = async (destination) => {
       if (!pdfDocument || !destination) {
         return null;
@@ -1127,8 +1620,8 @@
       }
 
       outlineList.replaceChildren();
-      outlinePanel.hidden = false;
       setOutlineStatus("Loading...");
+      syncOutlineSidebar();
 
       try {
         const outline = await pdfDocument.getOutline();
@@ -1138,17 +1631,18 @@
         }
 
         if (!Array.isArray(outline) || outline.length === 0) {
-          outlinePanel.hidden = false;
           setOutlineStatus("No bookmarks");
+          syncOutlineSidebar();
           return;
         }
 
         outlineList.replaceChildren(renderOutlineItems(outline));
         setOutlineStatus(`${countOutlineItems(outline)} bookmarks`);
+        syncOutlineSidebar();
       } catch (error) {
         if (loadId === currentLoadId) {
-          outlinePanel.hidden = false;
           setOutlineStatus("Bookmarks unavailable");
+          syncOutlineSidebar();
         }
       }
     };
@@ -1208,6 +1702,7 @@
         pdfDocument = loadedDocument;
         currentPageNumber = 1;
         fitWidthEnabled = false;
+        loadUserBookmarks(file);
 
         showCanvasState();
         updateControls();
@@ -1275,6 +1770,14 @@
 
     fitWidthButton.addEventListener("click", () => {
       setFitWidth();
+    });
+
+    bookmarksToggleButton.addEventListener("click", () => {
+      setOutlineSidebarOpen(!outlineSidebarOpen);
+    });
+
+    addBookmarkButton.addEventListener("click", () => {
+      addCurrentPageBookmark();
     });
 
     pdfInput.addEventListener("change", () => {
