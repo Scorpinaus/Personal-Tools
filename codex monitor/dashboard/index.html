@@ -50,9 +50,11 @@
           <p class="source" id="costAssumptions">Cost basis: loading</p>
           <div class="tabs" role="tablist">
             <button class="tab active" type="button" data-tab-scope="costs" data-tab="modelCosts">By model</button>
+            <button class="tab" type="button" data-tab-scope="costs" data-tab="noCompactionCosts">API no-compaction</button>
             <button class="tab" type="button" data-tab-scope="costs" data-tab="sourceCosts">By source estimate</button>
           </div>
           <div id="modelCosts" class="tab-panel" data-tab-scope="costs"></div>
+          <div id="noCompactionCosts" class="tab-panel" data-tab-scope="costs" hidden></div>
           <div id="sourceCosts" class="tab-panel" data-tab-scope="costs" hidden></div>
           <p class="source">
             Pricing source is shown above for the selected cost basis. Reasoning tokens are shown separately and not double-counted.
@@ -69,12 +71,16 @@
         <div class="section-body">
           <div class="tabs" role="tablist">
             <button class="tab active" type="button" data-tab-scope="conversation" data-tab="conversationOverview">Overview</button>
-            <button class="tab tab-disabled" type="button" id="conversationAnalysisTab" disabled>Conversation Analysis</button>
+            <button class="tab tab-disabled" type="button" id="conversationAnalysisTab" data-tab-scope="conversation" data-tab="conversationAnalysis" disabled>Conversation Analysis</button>
+            <button class="tab tab-disabled" type="button" id="conversationNoCompactionTab" data-tab-scope="conversation" data-tab="conversationNoCompaction" disabled>No-compaction API</button>
           </div>
           <div id="conversationOverview" class="tab-panel" data-tab-scope="conversation"></div>
           <div id="conversationAnalysis" class="tab-panel" data-tab-scope="conversation" hidden>
             <div id="conversationTokens"></div>
             <p class="source" id="source"></p>
+          </div>
+          <div id="conversationNoCompaction" class="tab-panel" data-tab-scope="conversation" hidden>
+            <div id="conversationNoCompactionRows"></div>
           </div>
         </div>
       </details>

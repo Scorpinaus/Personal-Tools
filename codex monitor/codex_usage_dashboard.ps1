@@ -126,6 +126,18 @@ function Convert-SnapshotForJson {
         }
     }
 
+    $noCompactionCostTotals = @()
+    foreach ($windowName in @("Last 5 hours", "This week", "This month")) {
+        $rows = @($Snapshot.NoCompactionModelTokenRows | Where-Object { $_.Window -eq $windowName })
+        $totalUsd = Get-TotalEstimatedCostUsd $rows
+        $noCompactionCostTotals += [pscustomobject]@{
+            Window = $windowName
+            TotalCostUsd = $totalUsd
+            TotalCostSgd = [Math]::Round($totalUsd * $UsdToSgdRate, 4)
+            TotalCostCredits = 0.0
+        }
+    }
+
     function Get-SumProperty {
         param(
             [object[]]$Rows,
@@ -323,6 +335,8 @@ function Convert-SnapshotForJson {
             foreach ($row in $Snapshot.ConversationOverviewRows) {
                 $conversationCostTotals = $row.CostTotals
                 $conversationTotalCostUsd = if ($null -ne $conversationCostTotals -and $null -ne $conversationCostTotals.TotalCostUsd) { [double]$conversationCostTotals.TotalCostUsd } else { 0.0 }
+                $noCompactionCostTotalsForConversation = $row.NoCompactionCostTotals
+                $noCompactionTotalCostUsd = if ($null -ne $noCompactionCostTotalsForConversation -and $null -ne $noCompactionCostTotalsForConversation.TotalCostUsd) { [double]$noCompactionCostTotalsForConversation.TotalCostUsd } else { 0.0 }
                 [pscustomobject]@{
                     Session = $row.Session
                     LastModified = Format-DisplayDateTime $row.LastModified
@@ -333,6 +347,12 @@ function Convert-SnapshotForJson {
                         TotalCostUsd = $conversationTotalCostUsd
                         TotalCostSgd = [Math]::Round($conversationTotalCostUsd * $UsdToSgdRate, 4)
                         TotalCostCredits = if ($null -ne $conversationCostTotals -and $null -ne $conversationCostTotals.TotalCostCredits) { $conversationCostTotals.TotalCostCredits } else { 0.0 }
+                    }
+                    NoCompactionTurnRows = Copy-TurnRowsForJson @($row.NoCompactionTurnRows)
+                    NoCompactionCostTotals = [pscustomobject]@{
+                        TotalCostUsd = $noCompactionTotalCostUsd
+                        TotalCostSgd = [Math]::Round($noCompactionTotalCostUsd * $UsdToSgdRate, 4)
+                        TotalCostCredits = 0.0
                     }
                     ContextWindow = $row.ContextWindow
                     LatestUsageTimestamp = Format-LocalDateTime $row.LatestUsageTimestamp
@@ -359,10 +379,12 @@ function Convert-SnapshotForJson {
         RateLimitHistorySampleSeconds = if ($Snapshot.PSObject.Properties["RateLimitHistorySampleSeconds"]) { $Snapshot.RateLimitHistorySampleSeconds } else { $RateLimitHistorySampleSeconds }
         RollingTokenRows = Copy-RowWithInputBreakdown @($Snapshot.RollingTokenRows)
         ModelTokenRows = Copy-RowWithInputBreakdown @($Snapshot.ModelTokenRows)
+        NoCompactionModelTokenRows = Copy-RowWithInputBreakdown @($Snapshot.NoCompactionModelTokenRows)
         ModelTokenPeriodRows = Copy-RowWithInputBreakdown @($Snapshot.ModelTokenPeriodRows)
         ModelTokenPeriodWindows = $Snapshot.ModelTokenPeriodWindows
         SourceCostRows = Copy-RowWithInputBreakdown @($Snapshot.SourceCostRows) "AllocatedInput" "AllocatedCachedInput" "AllocatedNonCachedInput"
         ModelCostTotals = $costTotals
+        NoCompactionModelCostTotals = $noCompactionCostTotals
         ModelPeriodCostTotals = @($periodCostTotals | Sort-Object PeriodGroup, PeriodSortOrder)
         TokenRows = Copy-RowWithInputBreakdown @($Snapshot.TokenRows)
         ConversationOverviewRows = $conversationOverviewRows
@@ -371,7 +393,37 @@ function Convert-SnapshotForJson {
     }
 }
 
-$prefix = "http://localhost:$Port/"
+$prefix = "http://127.0.0.1:$Port/"
+
+function Open-DashboardUrl {
+    param([string]$Url)
+
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"),
+        (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe"),
+        (Join-Path $env:ProgramFiles "Mozilla Firefox\firefox.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Mozilla Firefox\firefox.exe")
+    )
+
+    foreach ($candidate in $candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            Start-Process -FilePath $candidate -ArgumentList @($Url)
+            return $true
+        }
+    }
+
+    foreach ($commandName in @("msedge.exe", "chrome.exe", "firefox.exe")) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace($command.Source)) {
+            Start-Process -FilePath $command.Source -ArgumentList @($Url)
+            return $true
+        }
+    }
+
+    return $false
+}
 
 function Write-TcpHttpResponse {
     param(
@@ -516,10 +568,7 @@ catch [System.Net.Sockets.SocketException] {
             $existing = Invoke-WebRequest -UseBasicParsing $prefix -TimeoutSec 3
             if ($existing.StatusCode -ge 200 -and $existing.StatusCode -lt 500) {
                 if (-not $NoOpen) {
-                    try {
-                        Start-Process $prefix
-                    }
-                    catch {
+                    if (-not (Open-DashboardUrl $prefix)) {
                         Write-Host ("Dashboard is already running at {0}" -f $prefix)
                     }
                 }
@@ -540,7 +589,7 @@ catch [System.Net.Sockets.SocketException] {
             $candidateListener.Start()
             $listener = $candidateListener
             $Port = $candidatePort
-            $prefix = "http://localhost:$Port/"
+            $prefix = "http://127.0.0.1:$Port/"
             Write-Host ("Port {0} is unavailable; using {1} instead." -f $requestedPort, $prefix)
             break
         }
@@ -557,10 +606,7 @@ catch [System.Net.Sockets.SocketException] {
 }
 
 if (-not $NoOpen) {
-    try {
-        Start-Process $prefix
-    }
-    catch {
+    if (-not (Open-DashboardUrl $prefix)) {
         Write-Host ("Open this URL in your browser: {0}" -f $prefix)
     }
 }

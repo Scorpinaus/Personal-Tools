@@ -148,8 +148,12 @@ sealed class MonitorOptions
 
 sealed class UsageMonitor
 {
+    public const long LongContextThresholdTokens = 270_000;
+    const string NoCompactionCostBasisMode = "ApiNoCompactionUsdEstimate";
+
     readonly MonitorOptions _options;
     readonly Dictionary<string, CacheEntry<TokenBucket>> _windowCostCache = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, CacheEntry<TokenBucket>> _noCompactionWindowCostCache = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, CacheEntry<TokenBucket>> _periodCostCache = new(StringComparer.OrdinalIgnoreCase);
 
     public UsageMonitor(MonitorOptions options) => _options = options;
@@ -195,6 +199,7 @@ sealed class UsageMonitor
 
             var rateLimits = rateLimitMatch?.RateLimits ?? usageMatch?.RateLimits;
             var modelRows = GetCachedTokenUsageByModel(forceCostRefresh);
+            var noCompactionModelRows = GetCachedNoCompactionTokenUsageByModel(forceCostRefresh);
             var periodWindows = GetModelPeriodWindowDefinitions();
             var modelPeriodRows = GetCachedTokenUsageByModelPeriods(forceCostRefresh);
 
@@ -207,6 +212,7 @@ sealed class UsageMonitor
                 RateLimitRows = ConvertRateLimits(rateLimits),
                 RollingTokenRows = GetRollingTokenUsage(_options.RollingMaxFiles, _options.RollingTailLines),
                 ModelTokenRows = modelRows,
+                NoCompactionModelTokenRows = noCompactionModelRows,
                 ModelTokenPeriodRows = modelPeriodRows,
                 ModelTokenPeriodWindows = periodWindows,
                 SourceCostRows = GetTokenSourceCostEstimates(_options.CostMaxFiles, _options.CostTailLines, modelRows),
@@ -274,6 +280,32 @@ sealed class UsageMonitor
         }
 
         return windows.Where(w => _windowCostCache.ContainsKey(w.Name)).SelectMany(w => _windowCostCache[w.Name].Rows).ToList();
+    }
+
+    List<TokenBucket> GetCachedNoCompactionTokenUsageByModel(bool force)
+    {
+        var now = DateTime.Now;
+        var windows = GetCostWindowDefinitions().ToList();
+        var dueNames = new List<string>();
+        foreach (var window in windows)
+        {
+            var due = force || !_noCompactionWindowCostCache.TryGetValue(window.Name, out var cache) || (now - cache.UpdatedAt).TotalSeconds >= window.RefreshSeconds;
+            if (due)
+            {
+                dueNames.Add(window.Name);
+            }
+        }
+
+        if (dueNames.Count > 0)
+        {
+            var fresh = GetNoCompactionTokenUsageByModel(_options.CostMaxFiles, dueNames.ToArray());
+            foreach (var name in dueNames)
+            {
+                _noCompactionWindowCostCache[name] = new CacheEntry<TokenBucket>(now, fresh.Where(r => r.Window == name).ToList());
+            }
+        }
+
+        return windows.Where(w => _noCompactionWindowCostCache.ContainsKey(w.Name)).SelectMany(w => _noCompactionWindowCostCache[w.Name].Rows).ToList();
     }
 
     List<TokenBucket> GetCachedTokenUsageByModelPeriods(bool force)
@@ -388,6 +420,7 @@ sealed class UsageMonitor
         {
             var matches = GetLatestConversationUsageMatches([file], 0, DateTime.MinValue);
             var turnRows = GetConversationTurnTokenRows(file.FullName);
+            var noCompactionTurnRows = GetNoCompactionTurnTokenRows(turnRows);
             rows.Add(new ConversationOverviewRow
             {
                 Session = Path.GetFileNameWithoutExtension(file.Name),
@@ -396,8 +429,57 @@ sealed class UsageMonitor
                 TokenRows = matches.Usage is null ? [] : ConvertConversationUsageRows(matches.Usage),
                 TurnTokenRows = turnRows,
                 CostTotals = new ConversationCostTotals(GetTotalEstimatedCostUsd(turnRows), GetTotalEstimatedCostCredits(turnRows)),
+                NoCompactionTurnRows = noCompactionTurnRows,
+                NoCompactionCostTotals = new ConversationCostTotals(GetTotalEstimatedCostUsd(noCompactionTurnRows), 0),
                 ContextWindow = matches.Usage?.ContextWindow,
                 LatestUsageTimestamp = matches.Usage?.Timestamp
+            });
+        }
+
+        return rows;
+    }
+
+    List<NoCompactionTurnTokenRow> GetNoCompactionTurnTokenRows(IEnumerable<TurnTokenRow> turnRows)
+    {
+        var rows = new List<NoCompactionTurnTokenRow>();
+        long cumulativeInput = 0;
+        foreach (var turn in turnRows.OrderBy(row => row.Turn))
+        {
+            var before = cumulativeInput;
+            cumulativeInput += turn.Input;
+            var band = GetNoCompactionPricingBand(turn.Model, cumulativeInput);
+            var pricing = GetApiModelPricing(turn.Model, band);
+            double? cost = null;
+            if (pricing is not null)
+            {
+                cost = Math.Round(
+                    turn.NonCachedInput * pricing.InputPerMillion / 1_000_000.0 +
+                    turn.CachedInput * pricing.CachedInputPerMillion / 1_000_000.0 +
+                    turn.Output * pricing.OutputPerMillion / 1_000_000.0,
+                    4);
+            }
+
+            rows.Add(new NoCompactionTurnTokenRow
+            {
+                Turn = turn.Turn,
+                Timestamp = turn.Timestamp,
+                Model = turn.Model,
+                PricingBand = band,
+                PricingMode = _options.PricingMode,
+                CostUnit = pricing?.Unit,
+                BillingConfidence = pricing is null ? "Low" : "Scenario",
+                Total = turn.Total,
+                Input = turn.Input,
+                CachedInput = turn.CachedInput,
+                NonCachedInput = turn.NonCachedInput,
+                Output = turn.Output,
+                Reasoning = turn.Reasoning,
+                CumulativeInputBeforeTurn = before,
+                CumulativeInput = cumulativeInput,
+                ThresholdTokens = LongContextThresholdTokens,
+                EstimatedCost = cost,
+                EstimatedCostUsd = cost,
+                EstimatedCostCredits = null
             });
         }
 
@@ -657,6 +739,61 @@ sealed class UsageMonitor
         }
 
         return buckets.Values.OrderBy(b => b.Window).ThenBy(b => b.Model).ToList();
+    }
+
+    List<TokenBucket> GetNoCompactionTokenUsageByModel(int limit, string[] windowNames)
+    {
+        var windows = GetCostWindowDefinitions(windowNames).ToList();
+        if (windows.Count == 0)
+        {
+            return [];
+        }
+
+        var oldestStart = windows.Min(w => w.StartUtc);
+        var buckets = new Dictionary<string, TokenBucket>(StringComparer.Ordinal);
+        foreach (var file in GetSessionFiles(limit))
+        {
+            if (file.LastWriteTimeUtc < oldestStart)
+            {
+                continue;
+            }
+
+            long cumulativeInput = 0;
+            foreach (var usageEvent in GetSessionUsageDeltas(file.FullName))
+            {
+                cumulativeInput += usageEvent.Metrics.Input;
+                if (usageEvent.Timestamp < oldestStart)
+                {
+                    continue;
+                }
+
+                var band = GetNoCompactionPricingBand(usageEvent.Model, cumulativeInput);
+                foreach (var window in windows)
+                {
+                    if (usageEvent.Timestamp < window.StartUtc)
+                    {
+                        continue;
+                    }
+
+                    var key = $"{window.Name}|{usageEvent.Model}|{band}";
+                    if (!buckets.TryGetValue(key, out var bucket))
+                    {
+                        bucket = NewTokenBucket(window.Name, usageEvent.Model, band);
+                        bucket.CostBasisMode = NoCompactionCostBasisMode;
+                        buckets[key] = bucket;
+                    }
+
+                    AddTokenMetrics(bucket, usageEvent.Metrics);
+                }
+            }
+        }
+
+        foreach (var bucket in buckets.Values)
+        {
+            SetNoCompactionEstimatedCost(bucket);
+        }
+
+        return buckets.Values.OrderBy(b => b.Window).ThenBy(b => b.Model).ThenBy(b => b.PricingBand).ToList();
     }
 
     List<TokenBucket> GetTokenUsageByModelPeriod(int limit, int tail, IReadOnlyList<PeriodWindow> windows)
@@ -1089,6 +1226,35 @@ sealed class UsageMonitor
         bucket.BillingConfidence = "Medium";
     }
 
+    void SetNoCompactionEstimatedCost(TokenBucket bucket)
+    {
+        if (string.IsNullOrWhiteSpace(bucket.Model))
+        {
+            return;
+        }
+
+        bucket.PricingMode = _options.PricingMode;
+        bucket.CostBasisMode = NoCompactionCostBasisMode;
+        var pricing = GetApiModelPricing(bucket.Model, bucket.PricingBand);
+        if (pricing is null)
+        {
+            bucket.BillingConfidence = "Low";
+            return;
+        }
+
+        var uncachedInput = Math.Max(0, bucket.Input - bucket.CachedInput);
+        var cost = Math.Round(
+            uncachedInput * pricing.InputPerMillion / 1_000_000.0 +
+            bucket.CachedInput * pricing.CachedInputPerMillion / 1_000_000.0 +
+            bucket.Output * pricing.OutputPerMillion / 1_000_000.0,
+            4);
+        bucket.CostUnit = pricing.Unit;
+        bucket.EstimatedCost = cost;
+        bucket.EstimatedCostUsd = cost;
+        bucket.EstimatedCostCredits = null;
+        bucket.BillingConfidence = "Scenario";
+    }
+
     PricingRecord? GetModelPricing(string? model, long inputTokens = 0, string? pricingBand = null)
     {
         if (string.IsNullOrWhiteSpace(model))
@@ -1117,7 +1283,37 @@ sealed class UsageMonitor
         return pricing;
     }
 
-    static string GetPricingBand(string? model, long inputTokens) => model is "gpt-5.5" or "gpt-5.4" && inputTokens > 272000 ? "Long" : "Short";
+    PricingRecord? GetApiModelPricing(string? model, string? pricingBand)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return null;
+        }
+
+        var band = string.IsNullOrWhiteSpace(pricingBand) ? "Short" : pricingBand;
+        var rows = PricingTable();
+        var pricing = rows.FirstOrDefault(p => p.Basis == "ApiUsdEstimate" && p.Mode == _options.PricingMode && p.Model == model && p.ContextBand == band);
+        if (pricing is null && band == "Long")
+        {
+            pricing = rows.FirstOrDefault(p => p.Basis == "ApiUsdEstimate" && p.Mode == _options.PricingMode && p.Model == model && p.ContextBand == "Short");
+        }
+
+        return pricing;
+    }
+
+    static string GetPricingBand(string? model, long inputTokens) => model is "gpt-5.5" or "gpt-5.4" && inputTokens >= LongContextThresholdTokens ? "Long" : "Short";
+
+    string GetNoCompactionPricingBand(string? model, long cumulativeInputTokens)
+    {
+        if (cumulativeInputTokens < LongContextThresholdTokens)
+        {
+            return "Short";
+        }
+
+        return PricingTable().Any(p => p.Basis == "ApiUsdEstimate" && p.Mode == _options.PricingMode && p.Model == model && p.ContextBand == "Long")
+            ? "Long"
+            : "Short";
+    }
 
     static IReadOnlyList<PricingRecord> PricingTable() =>
     [
@@ -1622,7 +1818,7 @@ sealed class DashboardServer
                 _options.DashboardPort = port;
                 if (port != requestedPort)
                 {
-                    Console.WriteLine($"Port {requestedPort} is unavailable; using http://localhost:{port}/ instead.");
+                    Console.WriteLine($"Port {requestedPort} is unavailable; using http://127.0.0.1:{port}/ instead.");
                 }
                 break;
             }
@@ -1638,14 +1834,10 @@ sealed class DashboardServer
             throw new InvalidOperationException($"Unable to listen on ports {requestedPort}-{requestedPort + 20}.");
         }
 
-        var prefix = $"http://localhost:{_options.DashboardPort}/";
+        var prefix = $"http://127.0.0.1:{_options.DashboardPort}/";
         if (!_options.NoOpen)
         {
-            try
-            {
-                Process.Start(new ProcessStartInfo(prefix) { UseShellExecute = true });
-            }
-            catch
+            if (!TryOpenDashboardUrl(prefix))
             {
                 Console.WriteLine($"Open this URL in your browser: {prefix}");
             }
@@ -1811,7 +2003,57 @@ sealed class DashboardServer
         stream.Flush();
     }
 
-    record RequestInfo(string Method, string Path);
+        record RequestInfo(string Method, string Path);
+
+    static bool TryOpenDashboardUrl(string url)
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft", "Edge", "Application", "msedge.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft", "Edge", "Application", "msedge.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Mozilla Firefox", "firefox.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Mozilla Firefox", "firefox.exe")
+        };
+
+        foreach (var candidate in candidates.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (File.Exists(candidate) && TryStartBrowser(candidate, url))
+            {
+                return true;
+            }
+        }
+
+        foreach (var command in new[] { "msedge.exe", "chrome.exe", "firefox.exe" })
+        {
+            if (TryStartBrowser(command, url))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    static bool TryStartBrowser(string fileName, string url)
+    {
+        try
+        {
+            var start = new ProcessStartInfo(fileName)
+            {
+                UseShellExecute = false
+            };
+            start.ArgumentList.Add(url);
+            Process.Start(start);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
 
 static class ConsoleRenderer
@@ -1843,6 +2085,7 @@ static class ConsoleRenderer
         PrintRows("Rate limits", snapshot.RateLimitRows.Select(r => $"{r.Window,-10} used {r.UsedPercent,6:N2}% remaining {r.RemainingPercent,6:N2}% resets {UsageMonitor.FormatDisplayDateTime(r.ResetsAt) ?? ""}"));
         PrintRows("Rolling token usage, local estimate", snapshot.RollingTokenRows.Select(r => $"{r.Window,-13} total {r.Total,12:N0} input {r.Input,12:N0} cached {r.CachedInput,12:N0} output {r.Output,12:N0} reasoning {r.Reasoning,12:N0} events {r.Events,5:N0}"));
         PrintRows("Estimated token cost by model, local estimate", snapshot.ModelTokenRows.Select(r => $"{r.Window,-13} {r.Model,-16} {r.PricingBand,-5} total {r.Total,12:N0} input {r.Input,12:N0} output {r.Output,12:N0} cost {r.EstimatedCost?.ToString("N4", CultureInfo.InvariantCulture) ?? ""} {r.CostUnit ?? ""}"));
+        PrintRows("API no-compaction scenario by model", snapshot.NoCompactionModelTokenRows.Select(r => $"{r.Window,-13} {r.Model,-16} {r.PricingBand,-5} total {r.Total,12:N0} input {r.Input,12:N0} output {r.Output,12:N0} cost {r.EstimatedCost?.ToString("N4", CultureInfo.InvariantCulture) ?? ""} {r.CostUnit ?? ""}"));
         PrintRows("Conversation token usage", snapshot.TokenRows.Select(r => $"{r.Scope,-20} total {r.Total,12:N0} input {r.Input,12:N0} cached {r.CachedInput,12:N0} output {r.Output,12:N0} reasoning {r.Reasoning,12:N0}"));
         if (snapshot.ContextWindow is not null)
         {
@@ -1885,6 +2128,13 @@ static class SnapshotJson
             var rows = snapshot.ModelTokenRows.Where(row => row.Window == window).ToList();
             var usd = TotalUsd(rows);
             return new { Window = window, TotalCostUsd = usd, TotalCostSgd = Math.Round(usd * options.UsdToSgdRate, 4), TotalCostCredits = TotalCredits(rows) };
+        }).ToList();
+
+        var noCompactionModelCostTotals = new[] { "Last 5 hours", "This week", "This month" }.Select(window =>
+        {
+            var rows = snapshot.NoCompactionModelTokenRows.Where(row => row.Window == window).ToList();
+            var usd = TotalUsd(rows);
+            return new { Window = window, TotalCostUsd = usd, TotalCostSgd = Math.Round(usd * options.UsdToSgdRate, 4), TotalCostCredits = 0.0 };
         }).ToList();
 
         var periodTotals = snapshot.ModelTokenPeriodWindows.Select(period =>
@@ -1931,10 +2181,12 @@ static class SnapshotJson
             snapshot.RateLimitHistorySampleSeconds,
             RollingTokenRows = snapshot.RollingTokenRows.Select(CopyTokenBucket).ToList(),
             ModelTokenRows = snapshot.ModelTokenRows.Select(CopyTokenBucket).ToList(),
+            NoCompactionModelTokenRows = snapshot.NoCompactionModelTokenRows.Select(CopyTokenBucket).ToList(),
             ModelTokenPeriodRows = snapshot.ModelTokenPeriodRows.Select(CopyTokenBucket).ToList(),
             snapshot.ModelTokenPeriodWindows,
             SourceCostRows = snapshot.SourceCostRows,
             ModelCostTotals = modelCostTotals,
+            NoCompactionModelCostTotals = noCompactionModelCostTotals,
             ModelPeriodCostTotals = periodTotals,
             TokenRows = snapshot.TokenRows.Select(CopyUsageRow).ToList(),
             ConversationOverviewRows = snapshot.ConversationOverviewRows.Select(row => new
@@ -1964,6 +2216,30 @@ static class SnapshotJson
                     turn.EstimatedCostCredits
                 }).ToList(),
                 CostTotals = new { row.CostTotals.TotalCostUsd, TotalCostSgd = Math.Round(row.CostTotals.TotalCostUsd * options.UsdToSgdRate, 4), row.CostTotals.TotalCostCredits },
+                NoCompactionTurnRows = row.NoCompactionTurnRows.Select(turn => new
+                {
+                    turn.Turn,
+                    Timestamp = UsageMonitor.FormatLocalDateTime(turn.Timestamp),
+                    turn.Model,
+                    turn.PricingBand,
+                    turn.PricingMode,
+                    turn.CostUnit,
+                    turn.BillingConfidence,
+                    turn.Total,
+                    turn.Input,
+                    turn.CachedInput,
+                    turn.NonCachedInput,
+                    turn.Output,
+                    turn.Reasoning,
+                    turn.CumulativeInputBeforeTurn,
+                    turn.CumulativeInput,
+                    turn.ThresholdTokens,
+                    turn.EstimatedCost,
+                    turn.EstimatedCostUsd,
+                    EstimatedCostSgd = turn.EstimatedCostUsd is null ? (double?)null : Math.Round(turn.EstimatedCostUsd.Value * options.UsdToSgdRate, 4),
+                    turn.EstimatedCostCredits
+                }).ToList(),
+                NoCompactionCostTotals = new { row.NoCompactionCostTotals.TotalCostUsd, TotalCostSgd = Math.Round(row.NoCompactionCostTotals.TotalCostUsd * options.UsdToSgdRate, 4), row.NoCompactionCostTotals.TotalCostCredits },
                 row.ContextWindow,
                 LatestUsageTimestamp = UsageMonitor.FormatLocalDateTime(row.LatestUsageTimestamp)
             }).ToList(),
@@ -2131,6 +2407,7 @@ sealed class Snapshot
     public List<RateLimitRow> RateLimitRows { get; set; } = [];
     public List<TokenBucket> RollingTokenRows { get; set; } = [];
     public List<TokenBucket> ModelTokenRows { get; set; } = [];
+    public List<TokenBucket> NoCompactionModelTokenRows { get; set; } = [];
     public List<TokenBucket> ModelTokenPeriodRows { get; set; } = [];
     public List<PeriodWindow> ModelTokenPeriodWindows { get; set; } = [];
     public List<SourceCostRow> SourceCostRows { get; set; } = [];
@@ -2213,6 +2490,29 @@ sealed class TurnTokenRow : ICostRow
     public double? EstimatedCostCredits { get; set; }
 }
 
+sealed class NoCompactionTurnTokenRow : ICostRow
+{
+    public int Turn { get; set; }
+    public DateTime Timestamp { get; set; }
+    public string? Model { get; set; }
+    public string? PricingBand { get; set; }
+    public string? PricingMode { get; set; }
+    public string? CostUnit { get; set; }
+    public string? BillingConfidence { get; set; }
+    public long Total { get; set; }
+    public long Input { get; set; }
+    public long CachedInput { get; set; }
+    public long NonCachedInput { get; set; }
+    public long Output { get; set; }
+    public long Reasoning { get; set; }
+    public long CumulativeInputBeforeTurn { get; set; }
+    public long CumulativeInput { get; set; }
+    public long ThresholdTokens { get; set; }
+    public double? EstimatedCost { get; set; }
+    public double? EstimatedCostUsd { get; set; }
+    public double? EstimatedCostCredits { get; set; }
+}
+
 sealed class ConversationOverviewRow
 {
     public string? Session { get; set; }
@@ -2221,6 +2521,8 @@ sealed class ConversationOverviewRow
     public List<TokenUsageRow> TokenRows { get; set; } = [];
     public List<TurnTokenRow> TurnTokenRows { get; set; } = [];
     public ConversationCostTotals CostTotals { get; set; } = new(0, 0);
+    public List<NoCompactionTurnTokenRow> NoCompactionTurnRows { get; set; } = [];
+    public ConversationCostTotals NoCompactionCostTotals { get; set; } = new(0, 0);
     public object? ContextWindow { get; set; }
     public DateTime? LatestUsageTimestamp { get; set; }
 }

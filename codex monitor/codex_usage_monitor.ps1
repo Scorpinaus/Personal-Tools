@@ -33,7 +33,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:LongContextThresholdTokens = 270000
 $script:CostWindowCache = @{}
+$script:NoCompactionCostWindowCache = @{}
 $script:CostPeriodCache = @{}
 
 function Get-PropValue {
@@ -716,7 +718,47 @@ function Get-PricingBand {
         return "Short"
     }
 
-    if ($InputTokens -gt 272000) {
+    if ($InputTokens -ge $script:LongContextThresholdTokens) {
+        return "Long"
+    }
+
+    return "Short"
+}
+
+function Get-ApiModelPricing {
+    param(
+        [string]$Model,
+        [string]$PricingBand = "Short"
+    )
+
+    $pricing = Get-ModelPricingTable |
+        Where-Object { $_.Basis -eq "ApiUsdEstimate" -and $_.Mode -eq $PricingMode -and $_.Model -eq $Model -and $_.ContextBand -eq $PricingBand } |
+        Select-Object -First 1
+
+    if ($null -eq $pricing -and $PricingBand -eq "Long") {
+        $pricing = Get-ModelPricingTable |
+            Where-Object { $_.Basis -eq "ApiUsdEstimate" -and $_.Mode -eq $PricingMode -and $_.Model -eq $Model -and $_.ContextBand -eq "Short" } |
+            Select-Object -First 1
+    }
+
+    return $pricing
+}
+
+function Get-NoCompactionPricingBand {
+    param(
+        [string]$Model,
+        [long]$CumulativeInputTokens
+    )
+
+    if ($CumulativeInputTokens -lt $script:LongContextThresholdTokens) {
+        return "Short"
+    }
+
+    $longPricing = Get-ModelPricingTable |
+        Where-Object { $_.Basis -eq "ApiUsdEstimate" -and $_.Mode -eq $PricingMode -and $_.Model -eq $Model -and $_.ContextBand -eq "Long" } |
+        Select-Object -First 1
+
+    if ($null -ne $longPricing) {
         return "Long"
     }
 
@@ -815,6 +857,36 @@ function Set-EstimatedCost {
         $Bucket.EstimatedCostUsd = $null
         $Bucket.EstimatedCostCredits = $roundedCost
     }
+}
+
+function Set-NoCompactionEstimatedCost {
+    param([object]$Bucket)
+
+    if ($null -eq $Bucket -or [string]::IsNullOrWhiteSpace($Bucket.Model)) {
+        return
+    }
+
+    $Bucket.PricingMode = $PricingMode
+    $Bucket.CostBasisMode = "ApiNoCompactionUsdEstimate"
+    $pricing = Get-ApiModelPricing -Model $Bucket.Model -PricingBand $Bucket.PricingBand
+    if ($null -eq $pricing) {
+        $Bucket.BillingConfidence = "Low"
+        return
+    }
+
+    $cachedInput = [Math]::Max(0L, [long]$Bucket.CachedInput)
+    $uncachedInput = [Math]::Max(0L, [long]$Bucket.Input - $cachedInput)
+    $cost =
+        ($uncachedInput * [double]$pricing.InputPerMillion / 1000000.0) +
+        ($cachedInput * [double]$pricing.CachedInputPerMillion / 1000000.0) +
+        ([long]$Bucket.Output * [double]$pricing.OutputPerMillion / 1000000.0)
+
+    $roundedCost = [Math]::Round($cost, 4)
+    $Bucket.CostUnit = $pricing.Unit
+    $Bucket.EstimatedCost = $roundedCost
+    $Bucket.EstimatedCostUsd = $roundedCost
+    $Bucket.EstimatedCostCredits = $null
+    $Bucket.BillingConfidence = "Scenario"
 }
 
 function Get-EstimatedTextChars {
@@ -1053,13 +1125,31 @@ function Get-SourceCostRows {
         [object[]]$ModelRows
     )
 
+    function Get-MeasureSumOrZero {
+        param(
+            [object[]]$Rows,
+            [string]$Property
+        )
+
+        if ($Rows.Count -eq 0) {
+            return 0L
+        }
+
+        $measure = $Rows | Measure-Object -Property $Property -Sum
+        if ($null -eq $measure -or $null -eq $measure.PSObject.Properties["Sum"] -or $null -eq $measure.Sum) {
+            return 0L
+        }
+
+        return [long]$measure.Sum
+    }
+
     $rows = @()
     foreach ($modelRow in $ModelRows) {
         $pricing = Get-ModelPricing -Model $modelRow.Model -InputTokens ([long]$modelRow.Input) -PricingBand $modelRow.PricingBand
         $sourceRows = @($EstimateRows | Where-Object { $_.Window -eq $modelRow.Window -and $_.Model -eq $modelRow.Model })
 
-        $inputEstimateTotal = [long](($sourceRows | Measure-Object -Property EstimatedInputTokens -Sum).Sum)
-        $outputEstimateTotal = [long](($sourceRows | Measure-Object -Property EstimatedOutputTokens -Sum).Sum)
+        $inputEstimateTotal = Get-MeasureSumOrZero -Rows $sourceRows -Property "EstimatedInputTokens"
+        $outputEstimateTotal = Get-MeasureSumOrZero -Rows $sourceRows -Property "EstimatedOutputTokens"
 
         $expandedRows = @($sourceRows)
         if ([long]$modelRow.Input -gt $inputEstimateTotal) {
@@ -1717,6 +1807,64 @@ function Get-TokenUsageByModel {
     return @($buckets.Values | Sort-Object Window, Model)
 }
 
+function Get-NoCompactionTokenUsageByModel {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Limit,
+        [string[]]$WindowNames = @("Last 5 hours", "This week", "This month")
+    )
+
+    $windows = @(Get-CostWindowDefinitions $WindowNames)
+    if ($windows.Count -eq 0) {
+        return @()
+    }
+
+    $oldestStart = ($windows | Sort-Object StartUtc | Select-Object -First 1).StartUtc
+    $buckets = @{}
+
+    foreach ($file in (Get-SessionFiles -Root $Root -Archived:$Archived -Limit $Limit)) {
+        if ($file.LastWriteTimeUtc -lt $oldestStart) {
+            continue
+        }
+
+        $cumulativeInput = 0L
+        foreach ($usageEvent in (Get-SessionUsageDeltas -Path $file.FullName -Tail 0)) {
+            $delta = $usageEvent.Metrics
+            $cumulativeInput += [long]$delta.Input
+
+            $eventTime = $usageEvent.Timestamp
+            if ($null -eq $eventTime -or $eventTime -lt $oldestStart) {
+                continue
+            }
+
+            $currentModel = $usageEvent.Model
+            $pricingBand = Get-NoCompactionPricingBand -Model $currentModel -CumulativeInputTokens $cumulativeInput
+
+            foreach ($window in $windows) {
+                if ($eventTime -lt $window.StartUtc) {
+                    continue
+                }
+
+                $key = "{0}|{1}|{2}" -f $window.Name, $currentModel, $pricingBand
+                if (-not $buckets.ContainsKey($key)) {
+                    $bucket = New-TokenBucket $window.Name $currentModel $pricingBand
+                    $bucket.CostBasisMode = "ApiNoCompactionUsdEstimate"
+                    $buckets[$key] = $bucket
+                }
+
+                Add-TokenMetrics $buckets[$key] $delta
+            }
+        }
+    }
+
+    foreach ($bucket in $buckets.Values) {
+        Set-NoCompactionEstimatedCost $bucket
+    }
+
+    return @($buckets.Values | Sort-Object Window, Model, PricingBand)
+}
+
 function Get-TokenUsageByModelPeriod {
     param(
         [string]$Root,
@@ -1898,6 +2046,52 @@ function Get-CachedTokenUsageByModel {
     return @($rows)
 }
 
+function Get-CachedNoCompactionTokenUsageByModel {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Limit,
+        [switch]$Force
+    )
+
+    $now = Get-Date
+    $windows = @(Get-CostWindowDefinitions)
+    $dueWindows = @()
+
+    foreach ($window in $windows) {
+        $cache = $script:NoCompactionCostWindowCache[$window.Name]
+        $isDue = $Force -or $null -eq $cache
+        if (-not $isDue) {
+            $ageSeconds = ($now - [datetime]$cache.UpdatedAt).TotalSeconds
+            $isDue = $ageSeconds -ge [double]$window.RefreshSeconds
+        }
+
+        if ($isDue) {
+            $dueWindows += $window.Name
+        }
+    }
+
+    if ($dueWindows.Count -gt 0) {
+        $freshRows = @(Get-NoCompactionTokenUsageByModel -Root $Root -Archived:$Archived -Limit $Limit -WindowNames $dueWindows)
+        foreach ($windowName in $dueWindows) {
+            $script:NoCompactionCostWindowCache[$windowName] = [pscustomobject]@{
+                UpdatedAt = $now
+                Rows = @($freshRows | Where-Object { $_.Window -eq $windowName })
+            }
+        }
+    }
+
+    $rows = @()
+    foreach ($window in $windows) {
+        $cache = $script:NoCompactionCostWindowCache[$window.Name]
+        if ($null -ne $cache) {
+            $rows += $cache.Rows
+        }
+    }
+
+    return @($rows)
+}
+
 function Get-CachedTokenUsageByModelPeriods {
     param(
         [string]$Root,
@@ -2029,6 +2223,53 @@ function Get-ConversationTurnTokenRows {
     )
 }
 
+function Get-NoCompactionTurnTokenRows {
+    param([object[]]$Rows)
+
+    $cumulativeInput = 0L
+    return @(
+        foreach ($row in @($Rows | Sort-Object Turn)) {
+            $input = [long]$row.Input
+            $before = $cumulativeInput
+            $cumulativeInput += $input
+            $pricingBand = Get-NoCompactionPricingBand -Model $row.Model -CumulativeInputTokens $cumulativeInput
+            $pricing = Get-ApiModelPricing -Model $row.Model -PricingBand $pricingBand
+            $cost = $null
+            $costUsd = $null
+            if ($null -ne $pricing) {
+                $costValue =
+                    ([long]$row.NonCachedInput * [double]$pricing.InputPerMillion / 1000000.0) +
+                    ([long]$row.CachedInput * [double]$pricing.CachedInputPerMillion / 1000000.0) +
+                    ([long]$row.Output * [double]$pricing.OutputPerMillion / 1000000.0)
+                $cost = [Math]::Round($costValue, 4)
+                $costUsd = $cost
+            }
+
+            [pscustomobject]@{
+                Turn = $row.Turn
+                Timestamp = $row.Timestamp
+                Model = $row.Model
+                PricingBand = $pricingBand
+                PricingMode = $PricingMode
+                CostUnit = if ($null -ne $pricing) { $pricing.Unit } else { $null }
+                BillingConfidence = if ($null -ne $pricing) { "Scenario" } else { "Low" }
+                Total = $row.Total
+                Input = $row.Input
+                CachedInput = $row.CachedInput
+                NonCachedInput = $row.NonCachedInput
+                Output = $row.Output
+                Reasoning = $row.Reasoning
+                CumulativeInputBeforeTurn = $before
+                CumulativeInput = $cumulativeInput
+                ThresholdTokens = $script:LongContextThresholdTokens
+                EstimatedCost = $cost
+                EstimatedCostUsd = $costUsd
+                EstimatedCostCredits = $null
+            }
+        }
+    )
+}
+
 function Get-ConversationCostTotals {
     param([object[]]$Rows)
 
@@ -2115,6 +2356,7 @@ function Get-ConversationOverviewRows {
             $matches = Get-LatestConversationUsageMatches -Files @($file) -Tail 0
             $usageMatch = $matches.Usage
             $turnTokenRows = @(Get-ConversationTurnTokenRows -Path $file.FullName)
+            $noCompactionTurnRows = @(Get-NoCompactionTurnTokenRows -Rows $turnTokenRows)
 
             [pscustomobject]@{
                 Session = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
@@ -2123,6 +2365,8 @@ function Get-ConversationOverviewRows {
                 TokenRows = @(Convert-ConversationUsageRows $usageMatch)
                 TurnTokenRows = $turnTokenRows
                 CostTotals = Get-ConversationCostTotals -Rows $turnTokenRows
+                NoCompactionTurnRows = $noCompactionTurnRows
+                NoCompactionCostTotals = Get-ConversationCostTotals -Rows $noCompactionTurnRows
                 ContextWindow = if ($null -ne $usageMatch) { $usageMatch.ContextWindow } else { $null }
                 LatestUsageTimestamp = if ($null -ne $usageMatch) { $usageMatch.Timestamp } else { $null }
             }
@@ -2189,6 +2433,7 @@ function Get-LatestCodexUsageSnapshot {
 
         $rateLimits = if ($null -ne $rateLimitMatch) { $rateLimitMatch.RateLimits } else { $usageMatch.RateLimits }
         $modelRows = @(Get-CachedTokenUsageByModel -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -Force:$ForceCostRefresh)
+        $noCompactionModelRows = @(Get-CachedNoCompactionTokenUsageByModel -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Force:$ForceCostRefresh)
         $modelPeriodRows = @(Get-CachedTokenUsageByModelPeriods -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -Force:$ForceCostRefresh)
         $modelPeriodWindows = @(Get-ModelPeriodWindowDefinitions)
 
@@ -2205,6 +2450,7 @@ function Get-LatestCodexUsageSnapshot {
             RateLimitRows = @(Convert-RateLimits $rateLimits)
             RollingTokenRows = @(Get-RollingTokenUsage -Root $Root -Archived:$Archived -Limit $RollingMaxFiles -Tail $RollingTailLines)
             ModelTokenRows = $modelRows
+            NoCompactionModelTokenRows = $noCompactionModelRows
             ModelTokenPeriodRows = $modelPeriodRows
             ModelTokenPeriodWindows = $modelPeriodWindows
             SourceCostRows = @(Get-TokenSourceCostEstimates -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -ModelRows $modelRows)
@@ -2316,6 +2562,27 @@ function Show-Snapshot {
             Write-Host "Regional uplift: not applied."
         }
         Write-Host ""
+    }
+
+    if ($Snapshot.PSObject.Properties["NoCompactionModelTokenRows"] -and $Snapshot.NoCompactionModelTokenRows.Count -gt 0) {
+        Write-Host "API no-compaction scenario by model"
+        foreach ($windowName in @("Last 5 hours", "This week", "This month")) {
+            $windowRows = @($Snapshot.NoCompactionModelTokenRows | Where-Object { $_.Window -eq $windowName })
+            if ($windowRows.Count -eq 0) {
+                continue
+            }
+
+            Write-Host $windowName
+            $windowRows |
+                Select-Object Model, PricingBand, PricingMode, CostUnit, BillingConfidence, Total, Input, CachedInput, Output, Reasoning, Events, EstimatedCost, EstimatedCostUsd |
+                Format-Table -AutoSize
+
+            $totalCostUsd = Get-TotalEstimatedCostUsd $windowRows
+            $totalCostSgd = [Math]::Round($totalCostUsd * $UsdToSgdRate, 4)
+            Write-Host ("totalCostUsd: {0:N4}" -f $totalCostUsd)
+            Write-Host ("totalCostSgd: {0:N4}" -f $totalCostSgd)
+            Write-Host ""
+        }
     }
 
     if ($Snapshot.TokenRows.Count -gt 0) {

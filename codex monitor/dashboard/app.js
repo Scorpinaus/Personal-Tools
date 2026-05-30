@@ -40,10 +40,12 @@
         "RateLimitHistorySummaryRows",
         "RollingTokenRows",
         "ModelTokenRows",
+        "NoCompactionModelTokenRows",
         "ModelTokenPeriodRows",
         "ModelTokenPeriodWindows",
         "SourceCostRows",
         "ModelCostTotals",
+        "NoCompactionModelCostTotals",
         "ModelPeriodCostTotals",
         "TokenRows"
       ].forEach((key) => {
@@ -53,7 +55,8 @@
       normalized.ConversationOverviewRows = asArray(normalized.ConversationOverviewRows).map((row) => ({
         ...(row || {}),
         TokenRows: asArray(row?.TokenRows),
-        TurnTokenRows: asArray(row?.TurnTokenRows)
+        TurnTokenRows: asArray(row?.TurnTokenRows),
+        NoCompactionTurnRows: asArray(row?.NoCompactionTurnRows)
       }));
 
       return normalized;
@@ -472,6 +475,14 @@
       return `<div class="tabs" role="tablist">${tabButtons}</div>${panels}<p class="source">SGD conversion: 1 USD = ${esc(usdToSgdRate)} SGD.</p>`;
     }
 
+    function renderNoCompactionCosts(rows, totals, usdToSgdRate) {
+      rows = asArray(rows);
+      totals = asArray(totals);
+      const periods = ["Last 5 hours", "This week", "This month"];
+      return periods.map((period) => renderModelCostOverviewPeriod(period, rows, totals)).join("") +
+        `<p class="source">Conservative API no-compaction scenario. Cumulative conversation input switches eligible models to long-context pricing at 270,000 tokens. SGD conversion: 1 USD = ${esc(usdToSgdRate)} SGD.</p>`;
+    }
+
     function renderSourceCosts(rows, usdToSgdRate) {
       const periods = ["Last 5 hours", "This week", "This month"];
       return periods.map((period) => {
@@ -600,6 +611,55 @@
         </div>`;
     }
 
+    function renderNoCompactionCostSummary(row) {
+      const totals = row?.NoCompactionCostTotals || {};
+      return `<div class="total">
+        <span>totalCostUsd: <strong>${fmtMoney(totals.TotalCostUsd || 0)}</strong></span>
+        <span>totalCostSgd: <strong>${fmtMoney(totals.TotalCostSgd || 0)}</strong></span>
+      </div>`;
+    }
+
+    function renderConversationNoCompaction(row) {
+      const rows = row?.NoCompactionTurnRows || [];
+      if (!row) {
+        return `<p class="muted">Choose a session from Overview to analyze its no-compaction API scenario.</p>`;
+      }
+      if (rows.length === 0) {
+        return `<h3>No-compaction API Scenario</h3><p class="muted">No turn-level token usage found for this session.</p>`;
+      }
+
+      const totalPages = Math.max(1, Math.ceil(rows.length / turnPageSize));
+      selectedConversationPage = Math.max(1, Math.min(selectedConversationPage, totalPages));
+      const start = (selectedConversationPage - 1) * turnPageSize;
+      const pageRows = rows.slice(start, start + turnPageSize);
+      const sourceLine = `<div class="source">
+        <div>Session: ${esc(row.Session || "")}</div>
+        <div>Source: ${esc(row.SourceFile || "")}</div>
+      </div>`;
+
+      return `${sourceLine}<h3>No-compaction API Scenario</h3>
+        ${renderNoCompactionCostSummary(row)}
+        ${table(pageRows, [
+          { key: "Turn", label: "Turn", number: true },
+          { key: "Timestamp", label: "Timestamp", date: true },
+          { key: "Model", label: "Model" },
+          { key: "PricingBand", label: "Pricing band" },
+          { key: "CumulativeInput", label: "Cumulative input", number: true },
+          { key: "Input", label: "Turn input", number: true },
+          { key: "NonCachedInput", label: "Non-cached input", number: true },
+          { key: "CachedInput", label: "Cached input", number: true },
+          { key: "Output", label: "Output", number: true },
+          { key: "EstimatedCostUsd", label: "Cost USD", money: true },
+          { key: "EstimatedCostSgd", label: "Cost SGD", money: true }
+        ])}
+        <div class="pager">
+          <button class="pager-button conversation-page" type="button" data-page="prev" ${selectedConversationPage <= 1 ? "disabled" : ""}>Previous</button>
+          <span class="pager-status">Page ${fmt(selectedConversationPage)} of ${fmt(totalPages)}</span>
+          <button class="pager-button conversation-page" type="button" data-page="next" ${selectedConversationPage >= totalPages ? "disabled" : ""}>Next</button>
+        </div>
+        <p class="source">Scenario assumes no compaction and applies API USD pricing. Eligible models switch to long-context pricing when cumulative conversation input reaches 270,000 tokens.</p>`;
+    }
+
     function renderConversationAnalysis(row) {
       const source = document.getElementById("source");
       if (!row) {
@@ -626,22 +686,31 @@
     }
 
     function setConversationTab(tabId) {
+      if (!findSelectedConversation() && tabId !== "conversationOverview") {
+        tabId = "conversationOverview";
+      }
       activeTabs.conversation = tabId;
       document.querySelectorAll(`.tab[data-tab-scope="conversation"]`).forEach((item) => {
         item.classList.toggle("active", item.dataset.tab === tabId);
       });
-      const analysisTab = document.getElementById("conversationAnalysisTab");
-      if (analysisTab) {
-        analysisTab.classList.toggle("active", tabId === "conversationAnalysis");
-      }
+      const hasSelection = !!findSelectedConversation();
+      ["conversationAnalysisTab", "conversationNoCompactionTab"].forEach((id) => {
+        const tab = document.getElementById(id);
+        if (!tab) return;
+        tab.disabled = !hasSelection;
+        tab.classList.toggle("tab-disabled", !hasSelection);
+        tab.classList.toggle("active", tab.dataset.tab === tabId);
+      });
       document.querySelectorAll(`.tab-panel[data-tab-scope="conversation"]`).forEach((panel) => {
         panel.hidden = panel.id !== tabId;
       });
     }
 
     function renderConversationSection() {
+      const selected = findSelectedConversation();
       document.getElementById("conversationOverview").innerHTML = renderConversationOverview(conversationRows);
-      document.getElementById("conversationTokens").innerHTML = renderConversationAnalysis(findSelectedConversation());
+      document.getElementById("conversationTokens").innerHTML = renderConversationAnalysis(selected);
+      document.getElementById("conversationNoCompactionRows").innerHTML = renderConversationNoCompaction(selected);
       setConversationTab(activeTabs.conversation || "conversationOverview");
     }
 
@@ -680,7 +749,7 @@
       if (analyze) {
         selectedConversationKey = analyze.dataset.conversationKey || null;
         selectedConversationPage = 1;
-        document.getElementById("conversationTokens").innerHTML = renderConversationAnalysis(findSelectedConversation());
+        renderConversationSection();
         setConversationTab("conversationAnalysis");
         return;
       }
@@ -688,7 +757,7 @@
       const pageButton = event.target.closest(".conversation-page");
       if (pageButton && !pageButton.disabled) {
         selectedConversationPage += pageButton.dataset.page === "next" ? 1 : -1;
-        document.getElementById("conversationTokens").innerHTML = renderConversationAnalysis(findSelectedConversation());
+        renderConversationSection();
         return;
       }
 
@@ -750,6 +819,7 @@
         ]);
         document.getElementById("rateLimitHistory").innerHTML = renderRateLimitHistory(data.RateLimitHistoryRows, data.RateLimitHistorySummaryRows, data.RateLimitHistoryDays);
         document.getElementById("modelCosts").innerHTML = renderCosts(data.ModelTokenRows, data.ModelCostTotals, data.UsdToSgdRate, data.ModelTokenPeriodRows, data.ModelPeriodCostTotals);
+        document.getElementById("noCompactionCosts").innerHTML = renderNoCompactionCosts(data.NoCompactionModelTokenRows, data.NoCompactionModelCostTotals, data.UsdToSgdRate);
         document.getElementById("sourceCosts").innerHTML = renderSourceCosts(data.SourceCostRows, data.UsdToSgdRate);
         conversationRows = data.ConversationOverviewRows;
         if (selectedConversationKey && !findSelectedConversation()) {
