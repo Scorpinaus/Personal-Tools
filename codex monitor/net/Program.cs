@@ -1856,8 +1856,14 @@ sealed class DashboardServer
         {
             while (!_shutdownRequested)
             {
-                using var client = _listener.AcceptTcpClient();
-                HandleClient(client);
+                var client = _listener.AcceptTcpClient();
+                _ = Task.Run(() =>
+                {
+                    using (client)
+                    {
+                        HandleClient(client);
+                    }
+                });
             }
         }
         catch (SocketException) when (_shutdownRequested)
@@ -1871,9 +1877,17 @@ sealed class DashboardServer
 
     void HandleClient(TcpClient client)
     {
+        client.ReceiveTimeout = 3000;
+        client.SendTimeout = 10000;
+
         try
         {
             var request = ReadRequest(client);
+            if (request is null)
+            {
+                return;
+            }
+
             if (request.Path == "/api/usage")
             {
                 var snapshot = _monitor.GetLatestSnapshot();
@@ -1914,13 +1928,16 @@ sealed class DashboardServer
                 WriteResponse(client, 200, asset.Value.ContentType, File.ReadAllText(asset.Value.Path));
             }
         }
+        catch (IOException ex) when (IsSocketTimeout(ex))
+        {
+        }
         catch (Exception ex)
         {
             WriteResponse(client, 500, "application/json; charset=utf-8", JsonSerializer.Serialize(new { error = ex.Message }, JsonTools.JsonOptions));
         }
     }
 
-    RequestInfo ReadRequest(TcpClient client)
+    RequestInfo? ReadRequest(TcpClient client)
     {
         using var reader = new StreamReader(client.GetStream(), Encoding.ASCII, leaveOpen: true);
         var requestLine = reader.ReadLine();
@@ -1935,7 +1952,7 @@ sealed class DashboardServer
 
         if (string.IsNullOrWhiteSpace(requestLine))
         {
-            return new RequestInfo("GET", "/");
+            return null;
         }
 
         var parts = requestLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -1954,6 +1971,19 @@ sealed class DashboardServer
         }
 
         return new RequestInfo(parts[0].ToUpperInvariant(), path);
+    }
+
+    static bool IsSocketTimeout(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is SocketException socketException && socketException.SocketErrorCode == SocketError.TimedOut)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     (string Path, string ContentType)? GetAsset(string path)
@@ -2003,7 +2033,7 @@ sealed class DashboardServer
         stream.Flush();
     }
 
-        record RequestInfo(string Method, string Path);
+    record RequestInfo(string Method, string Path);
 
     static bool TryOpenDashboardUrl(string url)
     {

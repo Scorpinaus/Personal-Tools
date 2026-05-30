@@ -449,6 +449,21 @@ function Write-TcpHttpResponse {
     $stream.Flush()
 }
 
+function Test-TcpTimeoutException {
+    param([System.Exception]$Exception)
+
+    $current = $Exception
+    while ($null -ne $current) {
+        if ($current -is [System.Net.Sockets.SocketException] -and $current.SocketErrorCode -eq [System.Net.Sockets.SocketError]::TimedOut) {
+            return $true
+        }
+
+        $current = $current.InnerException
+    }
+
+    return $false
+}
+
 function Get-TcpHttpRequest {
     param([System.Net.Sockets.TcpClient]$Client)
 
@@ -463,10 +478,7 @@ function Get-TcpHttpRequest {
     }
 
     if ([string]::IsNullOrWhiteSpace($requestLine)) {
-        return [pscustomobject]@{
-            Method = "GET"
-            Path = "/"
-        }
+        return $null
     }
 
     $parts = $requestLine -split "\s+"
@@ -619,7 +631,13 @@ try {
     while (-not $shutdownRequested) {
         $client = $listener.AcceptTcpClient()
         try {
+            $client.ReceiveTimeout = 1000
+            $client.SendTimeout = 10000
             $request = Get-TcpHttpRequest $client
+            if ($null -eq $request) {
+                continue
+            }
+
             $path = $request.Path
             if ($path -eq "/api/usage") {
                 $snapshot = Get-LatestCodexUsageSnapshot `
@@ -657,6 +675,11 @@ try {
                 else {
                     Write-TcpHttpResponse $client 404 "text/plain; charset=utf-8" "Not found"
                 }
+            }
+        }
+        catch [System.IO.IOException] {
+            if (-not (Test-TcpTimeoutException $_.Exception)) {
+                Write-TcpHttpResponse $client 500 "application/json; charset=utf-8" (@{ error = $_.Exception.Message } | ConvertTo-Json)
             }
         }
         catch {
