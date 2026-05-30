@@ -758,6 +758,11 @@
     }
 
     .reader-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
       min-height: 38px;
       padding: 9px 14px;
       color: var(--muted);
@@ -765,6 +770,54 @@
       border-top: 1px solid rgba(32, 35, 34, 0.12);
       font-size: 0.88rem;
       line-height: 1.25;
+    }
+
+    .reader-status-text {
+      min-width: min(100%, 18rem);
+    }
+
+    .page-analysis-status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid #d8ddda;
+      border-radius: 999px;
+      padding: 3px 9px;
+      color: #4f5754;
+      background: #f7f9f8;
+      font-size: 0.78rem;
+      font-weight: 680;
+      white-space: nowrap;
+    }
+
+    .page-analysis-status.is-searchable {
+      color: #06695e;
+      background: #e8f5f2;
+      border-color: #b9ddd6;
+    }
+
+    .page-analysis-status.is-mixed {
+      color: #315b8f;
+      background: #edf4ff;
+      border-color: #c6d9f4;
+    }
+
+    .page-analysis-status.is-ocr {
+      color: #845900;
+      background: #fff5d6;
+      border-color: #ead18a;
+    }
+
+    .page-analysis-status.is-limited,
+    .page-analysis-status.is-unknown {
+      color: #6c5662;
+      background: #faf0f4;
+      border-color: #e4c9d4;
+    }
+
+    .page-analysis-status.is-pending {
+      color: var(--muted);
+      background: #f7f9f8;
     }
 
     .sr-only {
@@ -1085,7 +1138,10 @@
             </div>
           </div>
         </div>
-        <div class="reader-status" id="readerStatus" aria-live="polite"></div>
+        <div class="reader-status" id="readerStatus" aria-live="polite">
+          <span class="reader-status-text" id="readerStatusText"></span>
+          <span class="page-analysis-status is-pending" id="pageAnalysisStatus">Text status unavailable</span>
+        </div>
       </div>
     </section>
   </main>
@@ -1100,6 +1156,8 @@
     const MIN_SCALE = 0.25;
     const MAX_SCALE = 4;
     const ZOOM_STEP = 0.25;
+    const SEARCHABLE_TEXT_MIN_CHARS = 12;
+    const SEARCHABLE_TEXT_MIN_WORDS = 2;
     const BOOKMARK_STORAGE_PREFIX = "pdf-reader-bookmarks:v1:";
 
     const openButton = document.querySelector("#openButton");
@@ -1129,7 +1187,8 @@
     const canvas = document.querySelector("#pdfCanvas");
     const textLayerContainer = document.querySelector("#textLayer");
     const searchHighlightLayer = document.querySelector("#searchHighlightLayer");
-    const readerStatus = document.querySelector("#readerStatus");
+    const readerStatusText = document.querySelector("#readerStatusText");
+    const pageAnalysisStatus = document.querySelector("#pageAnalysisStatus");
     const outlinePanel = document.querySelector("#outlinePanel");
     const outlineStatus = document.querySelector("#outlineStatus");
     const outlineList = document.querySelector("#outlineList");
@@ -1149,6 +1208,8 @@
     let searchQuery = "";
     let searchMatches = [];
     let selectedSearchMatchIndex = -1;
+    let pageAnalysisCache = new Map();
+    let pageAnalysisIndexing = false;
     let currentLoadId = 0;
     let currentPageNumber = 1;
     let currentScale = 1;
@@ -1176,11 +1237,35 @@
     };
 
     const setStatus = (message) => {
-      readerStatus.textContent = message;
+      readerStatusText.textContent = message;
     };
 
     const setOutlineStatus = (message) => {
       outlineStatus.textContent = message;
+    };
+
+    const updatePageAnalysisStatus = () => {
+      if (!pdfDocument) {
+        pageAnalysisStatus.className = "page-analysis-status is-pending";
+        pageAnalysisStatus.textContent = "Text status unavailable";
+        pageAnalysisStatus.title = "Open a PDF to analyze whether its pages contain searchable text.";
+        return;
+      }
+
+      const cachedAnalysis = pageAnalysisCache.get(currentPageNumber);
+
+      if (!cachedAnalysis || typeof cachedAnalysis.then === "function") {
+        pageAnalysisStatus.className = "page-analysis-status is-pending";
+        pageAnalysisStatus.textContent = pageAnalysisIndexing
+          ? "Checking text..."
+          : "Text status pending";
+        pageAnalysisStatus.title = "Analyzing PDF text objects and page image operations.";
+        return;
+      }
+
+      pageAnalysisStatus.className = `page-analysis-status ${cachedAnalysis.className}`;
+      pageAnalysisStatus.textContent = cachedAnalysis.label;
+      pageAnalysisStatus.title = cachedAnalysis.description;
     };
 
     const syncOutlineSidebar = () => {
@@ -1261,6 +1346,7 @@
       zoomLevel.value = fitWidthEnabled ? `Fit width ${formatZoom()}` : formatZoom();
       zoomLevel.textContent = fitWidthEnabled ? `Fit width ${formatZoom()}` : formatZoom();
       updateSearchControls();
+      updatePageAnalysisStatus();
       syncOutlineSidebar();
 
       if (hasDocument) {
@@ -1312,6 +1398,12 @@
       updateSearchControls();
     };
 
+    const resetPageAnalysisState = () => {
+      pageAnalysisCache = new Map();
+      pageAnalysisIndexing = false;
+      updatePageAnalysisStatus();
+    };
+
     const cancelRender = async () => {
       if (!renderTask) {
         return;
@@ -1335,6 +1427,7 @@
       await cancelRender();
       clearTextLayer();
       resetSearchState();
+      resetPageAnalysisState();
 
       if (pdfDocument) {
         await pdfDocument.destroy();
@@ -1497,6 +1590,237 @@
 
       textContentCache.set(pageNumber, textContentPromise);
       return textContentPromise;
+    };
+
+    const getTextStats = (pageSearch) => {
+      const compactText = pageSearch.normalizedText.trim();
+      const characterCount = compactText.replace(/\s/g, "").length;
+      const wordCount = compactText ? compactText.split(/\s+/).length : 0;
+
+      return {
+        characterCount,
+        wordCount,
+        hasAnyText: characterCount > 0,
+        hasSearchableText:
+          characterCount >= SEARCHABLE_TEXT_MIN_CHARS ||
+          wordCount >= SEARCHABLE_TEXT_MIN_WORDS,
+      };
+    };
+
+    const createOperatorValueSet = (names) => {
+      const ops = pdfjsLibrary && pdfjsLibrary.OPS ? pdfjsLibrary.OPS : {};
+
+      return new Set(
+        names
+          .map((name) => ops[name])
+          .filter((value) => Number.isInteger(value))
+      );
+    };
+
+    const inspectOperatorList = (operatorList) => {
+      const imageOps = createOperatorValueSet([
+        "paintImageMaskXObject",
+        "paintImageMaskXObjectGroup",
+        "paintImageXObject",
+        "paintInlineImageXObject",
+        "paintInlineImageXObjectGroup",
+        "paintImageXObjectRepeat",
+        "paintImageMaskXObjectRepeat",
+        "paintSolidColorImageMask",
+        "beginInlineImage",
+        "beginImageData",
+      ]);
+      const textOps = createOperatorValueSet([
+        "showText",
+        "showSpacedText",
+        "nextLineShowText",
+        "nextLineSetSpacingShowText",
+      ]);
+      const vectorOps = createOperatorValueSet([
+        "constructPath",
+        "stroke",
+        "fill",
+        "eoFill",
+        "fillStroke",
+        "eoFillStroke",
+        "rawFillPath",
+      ]);
+      const fnArray = Array.isArray(operatorList && operatorList.fnArray)
+        ? operatorList.fnArray
+        : [];
+
+      return fnArray.reduce((stats, operator) => ({
+        imageCount: stats.imageCount + (imageOps.has(operator) ? 1 : 0),
+        textPaintCount: stats.textPaintCount + (textOps.has(operator) ? 1 : 0),
+        vectorCount: stats.vectorCount + (vectorOps.has(operator) ? 1 : 0),
+      }), {
+        imageCount: 0,
+        textPaintCount: 0,
+        vectorCount: 0,
+      });
+    };
+
+    const createAnalysisDetails = (kind, textStats, operatorStats) => {
+      const countDetails =
+        `${textStats.characterCount} text chars, ` +
+        `${textStats.wordCount} words, ` +
+        `${operatorStats.imageCount} image ops`;
+
+      if (kind === "digital-text") {
+        return {
+          kind,
+          className: "is-searchable",
+          label: "Text searchable",
+          description: `This page has embedded PDF text. ${countDetails}.`,
+        };
+      }
+
+      if (kind === "searchable-image") {
+        return {
+          kind,
+          className: "is-mixed",
+          label: "Searchable image/mixed",
+          description:
+            "This page has images and embedded text, so search should work. " +
+            `${countDetails}.`,
+        };
+      }
+
+      if (kind === "image-only") {
+        return {
+          kind,
+          className: "is-ocr",
+          label: "OCR needed",
+          description:
+            "This page has image content but no useful PDF text objects. " +
+            "An OCR engine is needed to read text inside the image. " +
+            `${countDetails}.`,
+        };
+      }
+
+      if (kind === "limited-text") {
+        return {
+          kind,
+          className: "is-limited",
+          label: "Limited text",
+          description:
+            "Only a small amount of PDF text was detected; scans or diagrams may still need OCR. " +
+            `${countDetails}.`,
+        };
+      }
+
+      if (kind === "vector-or-empty") {
+        return {
+          kind,
+          className: "is-unknown",
+          label: "No text detected",
+          description:
+            "No searchable text or obvious page image was detected. " +
+            `${countDetails}, ${operatorStats.vectorCount} vector ops.`,
+        };
+      }
+
+      return {
+        kind: "unknown",
+        className: "is-unknown",
+        label: "Text status unknown",
+        description: `Text analysis could not classify this page. ${countDetails}.`,
+      };
+    };
+
+    const classifyPageAnalysis = (textStats, operatorStats) => {
+      const hasImages = operatorStats.imageCount > 0;
+
+      if (textStats.hasSearchableText && hasImages) {
+        return createAnalysisDetails("searchable-image", textStats, operatorStats);
+      }
+
+      if (textStats.hasSearchableText) {
+        return createAnalysisDetails("digital-text", textStats, operatorStats);
+      }
+
+      if (hasImages) {
+        return createAnalysisDetails("image-only", textStats, operatorStats);
+      }
+
+      if (textStats.hasAnyText) {
+        return createAnalysisDetails("limited-text", textStats, operatorStats);
+      }
+
+      return createAnalysisDetails("vector-or-empty", textStats, operatorStats);
+    };
+
+    const getPageAnalysis = async (pageNumber, page = null, loadId = currentLoadId) => {
+      const cachedAnalysis = pageAnalysisCache.get(pageNumber);
+
+      if (cachedAnalysis) {
+        return cachedAnalysis;
+      }
+
+      const activeDocument = pdfDocument;
+      const activeCache = pageAnalysisCache;
+
+      const analysisPromise = (async () => {
+        if (!activeDocument || loadId !== currentLoadId) {
+          return null;
+        }
+
+        const pdfPage = page || await activeDocument.getPage(pageNumber);
+        const textContent = await getPageTextContent(pageNumber, pdfPage)
+          .catch(() => ({ items: [] }));
+        const operatorList = await pdfPage.getOperatorList()
+          .catch(() => ({ fnArray: [] }));
+
+        if (!pdfDocument || pdfDocument !== activeDocument || loadId !== currentLoadId) {
+          return null;
+        }
+
+        const pageSearch = searchIndex[pageNumber - 1] ||
+          buildSearchPage(pageNumber, textContent);
+        searchIndex[pageNumber - 1] = pageSearch;
+
+        return classifyPageAnalysis(
+          getTextStats(pageSearch),
+          inspectOperatorList(operatorList)
+        );
+      })();
+
+      activeCache.set(pageNumber, analysisPromise);
+
+      try {
+        const analysis = await analysisPromise;
+
+        if (pageAnalysisCache === activeCache) {
+          if (analysis) {
+            activeCache.set(pageNumber, analysis);
+          } else {
+            activeCache.delete(pageNumber);
+          }
+
+          if (pageNumber === currentPageNumber) {
+            updatePageAnalysisStatus();
+          }
+        }
+
+        return analysis;
+      } catch (error) {
+        if (pageAnalysisCache === activeCache) {
+          const fallbackAnalysis = createAnalysisDetails("unknown", {
+            characterCount: 0,
+            wordCount: 0,
+            hasAnyText: false,
+            hasSearchableText: false,
+          }, {
+            imageCount: 0,
+            textPaintCount: 0,
+            vectorCount: 0,
+          });
+          activeCache.set(pageNumber, fallbackAnalysis);
+          updatePageAnalysisStatus();
+        }
+
+        return null;
+      }
     };
 
     const findMatchesInPage = (pageSearch, query) => {
@@ -1689,6 +2013,11 @@
           }
         }
 
+        if (!pageAnalysisCache.has(pageNumber)) {
+          void getPageAnalysis(pageNumber, page, loadId);
+          updatePageAnalysisStatus();
+        }
+
         textLayerContainer.replaceChildren();
         searchHighlightLayer.replaceChildren();
 
@@ -1736,7 +2065,9 @@
 
       const activeDocument = pdfDocument;
       searchIndexing = true;
+      pageAnalysisIndexing = true;
       updateSearchControls();
+      updatePageAnalysisStatus();
 
       for (let pageNumber = 1; pageNumber <= activeDocument.numPages; pageNumber += 1) {
         if (!pdfDocument || pdfDocument !== activeDocument || loadId !== currentLoadId) {
@@ -1766,6 +2097,11 @@
           }
         }
 
+        if (!pageAnalysisCache.has(pageNumber)) {
+          const page = await activeDocument.getPage(pageNumber);
+          await getPageAnalysis(pageNumber, page, loadId);
+        }
+
         await new Promise((resolve) => {
           setTimeout(resolve, 0);
         });
@@ -1773,8 +2109,10 @@
 
       if (pdfDocument === activeDocument && loadId === currentLoadId) {
         searchIndexing = false;
+        pageAnalysisIndexing = false;
         runSearch({ preserveSelection: true });
         updateSearchControls();
+        updatePageAnalysisStatus();
       }
     };
 
@@ -2351,6 +2689,7 @@
       await cancelRender();
       clearTextLayer();
       resetSearchState();
+      resetPageAnalysisState();
 
       if (pdfDocument) {
         await pdfDocument.destroy();
@@ -2404,6 +2743,7 @@
         await cancelRender();
         clearTextLayer();
         resetSearchState();
+        resetPageAnalysisState();
 
         if (pdfDocument) {
           await pdfDocument.destroy();
