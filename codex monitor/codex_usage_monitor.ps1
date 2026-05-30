@@ -37,6 +37,7 @@ $script:LongContextThresholdTokens = 270000
 $script:CostWindowCache = @{}
 $script:NoCompactionCostWindowCache = @{}
 $script:CostPeriodCache = @{}
+$script:NoCompactionCostPeriodCache = @{}
 
 function Get-PropValue {
     param(
@@ -1926,6 +1927,70 @@ function Get-TokenUsageByModelPeriod {
     return @($buckets.Values | Sort-Object PeriodGroup, PeriodSortOrder, Model)
 }
 
+function Get-NoCompactionTokenUsageByModelPeriod {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Limit,
+        [object[]]$Windows
+    )
+
+    if ($Windows.Count -eq 0) {
+        return @()
+    }
+
+    $oldestStart = ($Windows | Sort-Object StartUtc | Select-Object -First 1).StartUtc
+    $newestEnd = ($Windows | Sort-Object EndUtc -Descending | Select-Object -First 1).EndUtc
+    $buckets = @{}
+
+    foreach ($file in (Get-SessionFiles -Root $Root -Archived:$Archived -Limit $Limit)) {
+        if ($file.LastWriteTimeUtc -lt $oldestStart) {
+            continue
+        }
+
+        $cumulativeInput = 0L
+        foreach ($usageEvent in (Get-SessionUsageDeltas -Path $file.FullName -Tail 0)) {
+            $delta = $usageEvent.Metrics
+            $cumulativeInput += [long]$delta.Input
+
+            $eventTime = $usageEvent.Timestamp
+            if ($null -eq $eventTime -or $eventTime -lt $oldestStart -or $eventTime -ge $newestEnd) {
+                continue
+            }
+
+            $currentModel = $usageEvent.Model
+            $pricingBand = Get-NoCompactionPricingBand -Model $currentModel -CumulativeInputTokens $cumulativeInput
+
+            foreach ($window in $Windows) {
+                if ($eventTime -lt $window.StartUtc -or $eventTime -ge $window.EndUtc) {
+                    continue
+                }
+
+                $key = "{0}|{1}|{2}" -f $window.Name, $currentModel, $pricingBand
+                if (-not $buckets.ContainsKey($key)) {
+                    $bucket = New-TokenBucket $window.Group $currentModel $pricingBand
+                    $bucket.CostBasisMode = "ApiNoCompactionUsdEstimate"
+                    $bucket | Add-Member -NotePropertyName PeriodGroup -NotePropertyValue $window.Group
+                    $bucket | Add-Member -NotePropertyName PeriodName -NotePropertyValue $window.Name
+                    $bucket | Add-Member -NotePropertyName PeriodLabel -NotePropertyValue $window.Label
+                    $bucket | Add-Member -NotePropertyName PeriodStartUtc -NotePropertyValue $window.StartUtc
+                    $bucket | Add-Member -NotePropertyName PeriodEndUtc -NotePropertyValue $window.EndUtc
+                    $bucket | Add-Member -NotePropertyName PeriodSortOrder -NotePropertyValue $window.SortOrder
+                    $buckets[$key] = $bucket
+                }
+
+                Add-TokenMetrics $buckets[$key] $delta
+            }
+        }
+    }
+
+    foreach ($bucket in $buckets.Values) {
+        Set-NoCompactionEstimatedCost $bucket
+    }
+
+    return @($buckets.Values | Sort-Object PeriodGroup, PeriodSortOrder, Model, PricingBand)
+}
+
 function Get-TokenSourceCostEstimates {
     param(
         [string]$Root,
@@ -2135,6 +2200,56 @@ function Get-CachedTokenUsageByModelPeriods {
     $rows = @()
     foreach ($group in $groups) {
         $cache = $script:CostPeriodCache[$group]
+        if ($null -ne $cache) {
+            $rows += $cache.Rows
+        }
+    }
+
+    return @($rows)
+}
+
+function Get-CachedNoCompactionTokenUsageByModelPeriods {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Limit,
+        [switch]$Force
+    )
+
+    $now = Get-Date
+    $windows = @(Get-ModelPeriodWindowDefinitions)
+    $groups = @($windows | Select-Object -ExpandProperty Group -Unique)
+    $dueGroups = @()
+
+    foreach ($group in $groups) {
+        $groupWindows = @($windows | Where-Object { $_.Group -eq $group })
+        $refreshSeconds = ($groupWindows | Select-Object -First 1).RefreshSeconds
+        $cache = $script:NoCompactionCostPeriodCache[$group]
+        $isDue = $Force -or $null -eq $cache
+        if (-not $isDue) {
+            $ageSeconds = ($now - [datetime]$cache.UpdatedAt).TotalSeconds
+            $isDue = $ageSeconds -ge [double]$refreshSeconds
+        }
+
+        if ($isDue) {
+            $dueGroups += $group
+        }
+    }
+
+    if ($dueGroups.Count -gt 0) {
+        $dueWindows = @($windows | Where-Object { $dueGroups -contains $_.Group })
+        $freshRows = @(Get-NoCompactionTokenUsageByModelPeriod -Root $Root -Archived:$Archived -Limit $Limit -Windows $dueWindows)
+        foreach ($group in $dueGroups) {
+            $script:NoCompactionCostPeriodCache[$group] = [pscustomobject]@{
+                UpdatedAt = $now
+                Rows = @($freshRows | Where-Object { $_.PeriodGroup -eq $group })
+            }
+        }
+    }
+
+    $rows = @()
+    foreach ($group in $groups) {
+        $cache = $script:NoCompactionCostPeriodCache[$group]
         if ($null -ne $cache) {
             $rows += $cache.Rows
         }
@@ -2435,6 +2550,7 @@ function Get-LatestCodexUsageSnapshot {
         $modelRows = @(Get-CachedTokenUsageByModel -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -Force:$ForceCostRefresh)
         $noCompactionModelRows = @(Get-CachedNoCompactionTokenUsageByModel -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Force:$ForceCostRefresh)
         $modelPeriodRows = @(Get-CachedTokenUsageByModelPeriods -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -Force:$ForceCostRefresh)
+        $noCompactionModelPeriodRows = @(Get-CachedNoCompactionTokenUsageByModelPeriods -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Force:$ForceCostRefresh)
         $modelPeriodWindows = @(Get-ModelPeriodWindowDefinitions)
 
         $snapshot = [pscustomobject]@{
@@ -2452,6 +2568,7 @@ function Get-LatestCodexUsageSnapshot {
             ModelTokenRows = $modelRows
             NoCompactionModelTokenRows = $noCompactionModelRows
             ModelTokenPeriodRows = $modelPeriodRows
+            NoCompactionModelTokenPeriodRows = $noCompactionModelPeriodRows
             ModelTokenPeriodWindows = $modelPeriodWindows
             SourceCostRows = @(Get-TokenSourceCostEstimates -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Tail $CostTailLines -ModelRows $modelRows)
             CostBasis = if ($CostBasisMode -eq "CodexCredits") { "Codex credit equivalent for paid/extra usage" } else { "API-equivalent USD estimate for ChatGPT/Codex subscription usage" }

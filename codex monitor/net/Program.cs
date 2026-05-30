@@ -155,6 +155,7 @@ sealed class UsageMonitor
     readonly Dictionary<string, CacheEntry<TokenBucket>> _windowCostCache = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, CacheEntry<TokenBucket>> _noCompactionWindowCostCache = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, CacheEntry<TokenBucket>> _periodCostCache = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, CacheEntry<TokenBucket>> _noCompactionPeriodCostCache = new(StringComparer.OrdinalIgnoreCase);
 
     public UsageMonitor(MonitorOptions options) => _options = options;
 
@@ -202,6 +203,7 @@ sealed class UsageMonitor
             var noCompactionModelRows = GetCachedNoCompactionTokenUsageByModel(forceCostRefresh);
             var periodWindows = GetModelPeriodWindowDefinitions();
             var modelPeriodRows = GetCachedTokenUsageByModelPeriods(forceCostRefresh);
+            var noCompactionModelPeriodRows = GetCachedNoCompactionTokenUsageByModelPeriods(forceCostRefresh);
 
             var snapshot = new Snapshot
             {
@@ -214,6 +216,7 @@ sealed class UsageMonitor
                 ModelTokenRows = modelRows,
                 NoCompactionModelTokenRows = noCompactionModelRows,
                 ModelTokenPeriodRows = modelPeriodRows,
+                NoCompactionModelTokenPeriodRows = noCompactionModelPeriodRows,
                 ModelTokenPeriodWindows = periodWindows,
                 SourceCostRows = GetTokenSourceCostEstimates(_options.CostMaxFiles, _options.CostTailLines, modelRows),
                 CostBasis = _options.CostBasisMode == "CodexCredits"
@@ -335,6 +338,35 @@ sealed class UsageMonitor
         }
 
         return groups.Where(g => _periodCostCache.ContainsKey(g)).SelectMany(g => _periodCostCache[g].Rows).ToList();
+    }
+
+    List<TokenBucket> GetCachedNoCompactionTokenUsageByModelPeriods(bool force)
+    {
+        var now = DateTime.Now;
+        var windows = GetModelPeriodWindowDefinitions().ToList();
+        var groups = windows.Select(w => w.Group).Distinct().ToList();
+        var dueGroups = new List<string>();
+        foreach (var group in groups)
+        {
+            var refresh = windows.First(w => w.Group == group).RefreshSeconds;
+            var due = force || !_noCompactionPeriodCostCache.TryGetValue(group, out var cache) || (now - cache.UpdatedAt).TotalSeconds >= refresh;
+            if (due)
+            {
+                dueGroups.Add(group);
+            }
+        }
+
+        if (dueGroups.Count > 0)
+        {
+            var dueWindows = windows.Where(w => dueGroups.Contains(w.Group)).ToList();
+            var fresh = GetNoCompactionTokenUsageByModelPeriod(_options.CostMaxFiles, dueWindows);
+            foreach (var group in dueGroups)
+            {
+                _noCompactionPeriodCostCache[group] = new CacheEntry<TokenBucket>(now, fresh.Where(r => r.PeriodGroup == group).ToList());
+            }
+        }
+
+        return groups.Where(g => _noCompactionPeriodCostCache.ContainsKey(g)).SelectMany(g => _noCompactionPeriodCostCache[g].Rows).ToList();
     }
 
     List<RateLimitRow> ConvertRateLimits(JsonElement? rateLimits)
@@ -853,6 +885,68 @@ sealed class UsageMonitor
         }
 
         return buckets.Values.OrderBy(b => b.PeriodGroup).ThenBy(b => b.PeriodSortOrder).ThenBy(b => b.Model).ToList();
+    }
+
+    List<TokenBucket> GetNoCompactionTokenUsageByModelPeriod(int limit, IReadOnlyList<PeriodWindow> windows)
+    {
+        if (windows.Count == 0)
+        {
+            return [];
+        }
+
+        var oldestStart = windows.Min(w => w.StartUtc);
+        var newestEnd = windows.Max(w => w.EndUtc);
+        var buckets = new Dictionary<string, TokenBucket>(StringComparer.Ordinal);
+
+        foreach (var file in GetSessionFiles(limit))
+        {
+            if (file.LastWriteTimeUtc < oldestStart)
+            {
+                continue;
+            }
+
+            long cumulativeInput = 0;
+            foreach (var usageEvent in GetSessionUsageDeltas(file.FullName))
+            {
+                cumulativeInput += usageEvent.Metrics.Input;
+                if (usageEvent.Timestamp < oldestStart || usageEvent.Timestamp >= newestEnd)
+                {
+                    continue;
+                }
+
+                var band = GetNoCompactionPricingBand(usageEvent.Model, cumulativeInput);
+                foreach (var window in windows)
+                {
+                    if (usageEvent.Timestamp < window.StartUtc || usageEvent.Timestamp >= window.EndUtc)
+                    {
+                        continue;
+                    }
+
+                    var key = $"{window.Name}|{usageEvent.Model}|{band}";
+                    if (!buckets.TryGetValue(key, out var bucket))
+                    {
+                        bucket = NewTokenBucket(window.Group, usageEvent.Model, band);
+                        bucket.CostBasisMode = NoCompactionCostBasisMode;
+                        bucket.PeriodGroup = window.Group;
+                        bucket.PeriodName = window.Name;
+                        bucket.PeriodLabel = window.Label;
+                        bucket.PeriodStartUtc = window.StartUtc;
+                        bucket.PeriodEndUtc = window.EndUtc;
+                        bucket.PeriodSortOrder = window.SortOrder;
+                        buckets[key] = bucket;
+                    }
+
+                    AddTokenMetrics(bucket, usageEvent.Metrics);
+                }
+            }
+        }
+
+        foreach (var bucket in buckets.Values)
+        {
+            SetNoCompactionEstimatedCost(bucket);
+        }
+
+        return buckets.Values.OrderBy(b => b.PeriodGroup).ThenBy(b => b.PeriodSortOrder).ThenBy(b => b.Model).ThenBy(b => b.PricingBand).ToList();
     }
 
     List<SourceCostRow> GetTokenSourceCostEstimates(int limit, int tail, IReadOnlyList<TokenBucket> modelRows)
@@ -2192,6 +2286,31 @@ static class SnapshotJson
             };
         }).OrderBy(r => r.PeriodGroup).ThenBy(r => r.PeriodSortOrder).ToList();
 
+        var noCompactionPeriodTotals = snapshot.ModelTokenPeriodWindows.Select(period =>
+        {
+            var rows = snapshot.NoCompactionModelTokenPeriodRows.Where(row => row.PeriodGroup == period.Group && row.PeriodName == period.Name).ToList();
+            var totalInput = rows.Sum(r => r.Input);
+            var cached = rows.Sum(r => r.CachedInput);
+            var usd = TotalUsd(rows);
+            return new
+            {
+                PeriodGroup = period.Group,
+                PeriodName = period.Name,
+                PeriodLabel = period.Label,
+                PeriodSortOrder = period.SortOrder,
+                Total = rows.Sum(r => r.Total),
+                Input = totalInput,
+                CachedInput = cached,
+                NonCachedInput = Math.Max(0, totalInput - cached),
+                Output = rows.Sum(r => r.Output),
+                Reasoning = rows.Sum(r => r.Reasoning),
+                Events = rows.Sum(r => r.Events),
+                TotalCostUsd = usd,
+                TotalCostSgd = Math.Round(usd * options.UsdToSgdRate, 4),
+                TotalCostCredits = 0.0
+            };
+        }).OrderBy(r => r.PeriodGroup).ThenBy(r => r.PeriodSortOrder).ToList();
+
         return new
         {
             UpdatedAtLocal = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
@@ -2213,11 +2332,13 @@ static class SnapshotJson
             ModelTokenRows = snapshot.ModelTokenRows.Select(CopyTokenBucket).ToList(),
             NoCompactionModelTokenRows = snapshot.NoCompactionModelTokenRows.Select(CopyTokenBucket).ToList(),
             ModelTokenPeriodRows = snapshot.ModelTokenPeriodRows.Select(CopyTokenBucket).ToList(),
+            NoCompactionModelTokenPeriodRows = snapshot.NoCompactionModelTokenPeriodRows.Select(CopyTokenBucket).ToList(),
             snapshot.ModelTokenPeriodWindows,
             SourceCostRows = snapshot.SourceCostRows,
             ModelCostTotals = modelCostTotals,
             NoCompactionModelCostTotals = noCompactionModelCostTotals,
             ModelPeriodCostTotals = periodTotals,
+            NoCompactionModelPeriodCostTotals = noCompactionPeriodTotals,
             TokenRows = snapshot.TokenRows.Select(CopyUsageRow).ToList(),
             ConversationOverviewRows = snapshot.ConversationOverviewRows.Select(row => new
             {
@@ -2439,6 +2560,7 @@ sealed class Snapshot
     public List<TokenBucket> ModelTokenRows { get; set; } = [];
     public List<TokenBucket> NoCompactionModelTokenRows { get; set; } = [];
     public List<TokenBucket> ModelTokenPeriodRows { get; set; } = [];
+    public List<TokenBucket> NoCompactionModelTokenPeriodRows { get; set; } = [];
     public List<PeriodWindow> ModelTokenPeriodWindows { get; set; } = [];
     public List<SourceCostRow> SourceCostRows { get; set; } = [];
     public string? CostBasis { get; set; }

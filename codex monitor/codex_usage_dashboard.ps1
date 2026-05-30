@@ -270,6 +270,30 @@ function Convert-SnapshotForJson {
         }
     }
 
+    $noCompactionPeriodCostTotals = @()
+    foreach ($periodWindow in $Snapshot.ModelTokenPeriodWindows) {
+        $rows = @($Snapshot.NoCompactionModelTokenPeriodRows | Where-Object { $_.PeriodGroup -eq $periodWindow.Group -and $_.PeriodName -eq $periodWindow.Name })
+        $totalUsd = Get-TotalEstimatedCostUsd $rows
+        $totalInput = Get-SumProperty $rows "Input"
+        $totalCachedInput = Get-SumProperty $rows "CachedInput"
+        $noCompactionPeriodCostTotals += [pscustomobject]@{
+            PeriodGroup = $periodWindow.Group
+            PeriodName = $periodWindow.Name
+            PeriodLabel = $periodWindow.Label
+            PeriodSortOrder = $periodWindow.SortOrder
+            Total = Get-SumProperty $rows "Total"
+            Input = $totalInput
+            CachedInput = $totalCachedInput
+            NonCachedInput = [Math]::Max(0L, $totalInput - $totalCachedInput)
+            Output = Get-SumProperty $rows "Output"
+            Reasoning = Get-SumProperty $rows "Reasoning"
+            Events = Get-SumProperty $rows "Events"
+            TotalCostUsd = $totalUsd
+            TotalCostSgd = [Math]::Round($totalUsd * $UsdToSgdRate, 4)
+            TotalCostCredits = 0.0
+        }
+    }
+
     $rateLimitHistoryRows = @(
         if ($Snapshot.PSObject.Properties["RateLimitHistoryRows"]) {
             $seenRateLimitSamples = @{}
@@ -381,11 +405,13 @@ function Convert-SnapshotForJson {
         ModelTokenRows = Copy-RowWithInputBreakdown @($Snapshot.ModelTokenRows)
         NoCompactionModelTokenRows = Copy-RowWithInputBreakdown @($Snapshot.NoCompactionModelTokenRows)
         ModelTokenPeriodRows = Copy-RowWithInputBreakdown @($Snapshot.ModelTokenPeriodRows)
+        NoCompactionModelTokenPeriodRows = Copy-RowWithInputBreakdown @($Snapshot.NoCompactionModelTokenPeriodRows)
         ModelTokenPeriodWindows = $Snapshot.ModelTokenPeriodWindows
         SourceCostRows = Copy-RowWithInputBreakdown @($Snapshot.SourceCostRows) "AllocatedInput" "AllocatedCachedInput" "AllocatedNonCachedInput"
         ModelCostTotals = $costTotals
         NoCompactionModelCostTotals = $noCompactionCostTotals
         ModelPeriodCostTotals = @($periodCostTotals | Sort-Object PeriodGroup, PeriodSortOrder)
+        NoCompactionModelPeriodCostTotals = @($noCompactionPeriodCostTotals | Sort-Object PeriodGroup, PeriodSortOrder)
         TokenRows = Copy-RowWithInputBreakdown @($Snapshot.TokenRows)
         ConversationOverviewRows = $conversationOverviewRows
         ContextWindow = $Snapshot.ContextWindow
@@ -443,10 +469,25 @@ function Write-TcpHttpResponse {
     $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
     $header = "HTTP/1.1 $StatusCode $reason`r`nContent-Type: $ContentType`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`nCache-Control: no-store`r`n`r`n"
     $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($header)
-    $stream = $Client.GetStream()
-    $stream.Write($headerBytes, 0, $headerBytes.Length)
-    $stream.Write($bodyBytes, 0, $bodyBytes.Length)
-    $stream.Flush()
+    try {
+        if (-not $Client.Connected) {
+            return
+        }
+
+        $stream = $Client.GetStream()
+        $stream.Write($headerBytes, 0, $headerBytes.Length)
+        $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+        $stream.Flush()
+    }
+    catch [System.InvalidOperationException] {
+        return
+    }
+    catch [System.IO.IOException] {
+        return
+    }
+    catch [System.Net.Sockets.SocketException] {
+        return
+    }
 }
 
 function Test-TcpTimeoutException {

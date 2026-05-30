@@ -3,7 +3,7 @@
 
     const number = new Intl.NumberFormat();
     const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-    const activeTabs = { costs: "modelCosts", modelCostPeriod: "modelCostsOverall", rateHistory: "historyFiveHour", conversation: "conversationOverview", conversationCostMode: "conversationNormalTurns" };
+    const activeTabs = { costs: "modelCosts", modelCostPeriod: "modelCostsOverall", noCompactionCostPeriod: "noCompactionCostsOverall", rateHistory: "historyFiveHour", conversation: "conversationOverview", conversationCostMode: "conversationNormalTurns" };
     const stopMonitorButton = document.getElementById("stopMonitor");
     const turnPageSize = 10;
     let stopped = false;
@@ -42,11 +42,13 @@
         "ModelTokenRows",
         "NoCompactionModelTokenRows",
         "ModelTokenPeriodRows",
+        "NoCompactionModelTokenPeriodRows",
         "ModelTokenPeriodWindows",
         "SourceCostRows",
         "ModelCostTotals",
         "NoCompactionModelCostTotals",
         "ModelPeriodCostTotals",
+        "NoCompactionModelPeriodCostTotals",
         "TokenRows"
       ].forEach((key) => {
         normalized[key] = asArray(normalized[key]);
@@ -394,8 +396,8 @@
       ]);
     }
 
-    function modelCostPeriodId(period) {
-      return `modelCosts${period.replace(/[^A-Za-z0-9]/g, "")}`;
+    function modelCostPeriodId(prefix, period) {
+      return `${prefix}${period.replace(/[^A-Za-z0-9]/g, "")}`;
     }
 
     function modelCostHistoryTitle(period) {
@@ -452,34 +454,36 @@
       `;
     }
 
-    function renderCosts(rows, totals, usdToSgdRate, modelPeriodRows, periodTotals) {
+    function renderCostTabs(rows, totals, usdToSgdRate, modelPeriodRows, periodTotals, scope, prefix) {
       rows = asArray(rows);
       totals = asArray(totals);
       modelPeriodRows = asArray(modelPeriodRows);
       periodTotals = asArray(periodTotals);
       const periods = ["Last 5 hours", "This week", "This month"];
-      const active = activeTabs.modelCostPeriod || "modelCostsOverall";
+      const overallId = `${prefix}Overall`;
+      const active = activeTabs[scope] || overallId;
       const tabButtons = [
-        { id: "modelCostsOverall", label: "Overall" },
-        ...periods.map((period) => ({ id: modelCostPeriodId(period), label: period }))
-      ].map((tab) => `<button class="tab ${active === tab.id ? "active" : ""}" type="button" data-tab-scope="modelCostPeriod" data-tab="${tab.id}">${esc(tab.label)}</button>`).join("");
+        { id: overallId, label: "Overall" },
+        ...periods.map((period) => ({ id: modelCostPeriodId(prefix, period), label: period }))
+      ].map((tab) => `<button class="tab ${active === tab.id ? "active" : ""}" type="button" data-tab-scope="${scope}" data-tab="${tab.id}">${esc(tab.label)}</button>`).join("");
       const overview = periods.map((period) => renderModelCostOverviewPeriod(period, rows, totals)).join("");
       const panels = [
-        `<div id="modelCostsOverall" class="tab-panel" data-tab-scope="modelCostPeriod" ${active === "modelCostsOverall" ? "" : "hidden"}>${overview}</div>`,
+        `<div id="${overallId}" class="tab-panel" data-tab-scope="${scope}" ${active === overallId ? "" : "hidden"}>${overview}</div>`,
         ...periods.map((period) => {
-          const id = modelCostPeriodId(period);
-          return `<div id="${id}" class="tab-panel" data-tab-scope="modelCostPeriod" ${active === id ? "" : "hidden"}>${renderModelCostPeriod(period, rows, totals, usdToSgdRate, modelPeriodRows, periodTotals)}</div>`;
+          const id = modelCostPeriodId(prefix, period);
+          return `<div id="${id}" class="tab-panel" data-tab-scope="${scope}" ${active === id ? "" : "hidden"}>${renderModelCostPeriod(period, rows, totals, usdToSgdRate, modelPeriodRows, periodTotals)}</div>`;
         })
       ].join("");
 
-      return `<div class="tabs" role="tablist">${tabButtons}</div>${panels}<p class="source">SGD conversion: 1 USD = ${esc(usdToSgdRate)} SGD.</p>`;
+      return `<div class="tabs" role="tablist">${tabButtons}</div>${panels}`;
     }
 
-    function renderNoCompactionCosts(rows, totals, usdToSgdRate) {
-      rows = asArray(rows);
-      totals = asArray(totals);
-      const periods = ["Last 5 hours", "This week", "This month"];
-      return periods.map((period) => renderModelCostOverviewPeriod(period, rows, totals)).join("") +
+    function renderCosts(rows, totals, usdToSgdRate, modelPeriodRows, periodTotals) {
+      return `${renderCostTabs(rows, totals, usdToSgdRate, modelPeriodRows, periodTotals, "modelCostPeriod", "modelCosts")}<p class="source">SGD conversion: 1 USD = ${esc(usdToSgdRate)} SGD.</p>`;
+    }
+
+    function renderNoCompactionCosts(rows, totals, usdToSgdRate, modelPeriodRows, periodTotals) {
+      return `${renderCostTabs(rows, totals, usdToSgdRate, modelPeriodRows, periodTotals, "noCompactionCostPeriod", "noCompactionCosts")}` +
         `<p class="source">Conservative API no-compaction scenario. Cumulative conversation input switches eligible models to long-context pricing at 270,000 tokens. SGD conversion: 1 USD = ${esc(usdToSgdRate)} SGD.</p>`;
     }
 
@@ -822,7 +826,7 @@
         ]);
         document.getElementById("rateLimitHistory").innerHTML = renderRateLimitHistory(data.RateLimitHistoryRows, data.RateLimitHistorySummaryRows, data.RateLimitHistoryDays);
         document.getElementById("modelCosts").innerHTML = renderCosts(data.ModelTokenRows, data.ModelCostTotals, data.UsdToSgdRate, data.ModelTokenPeriodRows, data.ModelPeriodCostTotals);
-        document.getElementById("noCompactionCosts").innerHTML = renderNoCompactionCosts(data.NoCompactionModelTokenRows, data.NoCompactionModelCostTotals, data.UsdToSgdRate);
+        document.getElementById("noCompactionCosts").innerHTML = renderNoCompactionCosts(data.NoCompactionModelTokenRows, data.NoCompactionModelCostTotals, data.UsdToSgdRate, data.NoCompactionModelTokenPeriodRows, data.NoCompactionModelPeriodCostTotals);
         document.getElementById("sourceCosts").innerHTML = renderSourceCosts(data.SourceCostRows, data.UsdToSgdRate);
         conversationRows = data.ConversationOverviewRows;
         if (selectedConversationKey && !findSelectedConversation()) {
