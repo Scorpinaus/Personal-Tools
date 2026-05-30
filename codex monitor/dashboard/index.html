@@ -72,15 +72,11 @@
           <div class="tabs" role="tablist">
             <button class="tab active" type="button" data-tab-scope="conversation" data-tab="conversationOverview">Overview</button>
             <button class="tab tab-disabled" type="button" id="conversationAnalysisTab" data-tab-scope="conversation" data-tab="conversationAnalysis" disabled>Conversation Analysis</button>
-            <button class="tab tab-disabled" type="button" id="conversationNoCompactionTab" data-tab-scope="conversation" data-tab="conversationNoCompaction" disabled>No-compaction API</button>
           </div>
           <div id="conversationOverview" class="tab-panel" data-tab-scope="conversation"></div>
           <div id="conversationAnalysis" class="tab-panel" data-tab-scope="conversation" hidden>
             <div id="conversationTokens"></div>
             <p class="source" id="source"></p>
-          </div>
-          <div id="conversationNoCompaction" class="tab-panel" data-tab-scope="conversation" hidden>
-            <div id="conversationNoCompactionRows"></div>
           </div>
         </div>
       </details>

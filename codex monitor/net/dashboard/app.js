@@ -3,7 +3,7 @@
 
     const number = new Intl.NumberFormat();
     const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
-    const activeTabs = { costs: "modelCosts", modelCostPeriod: "modelCostsOverall", rateHistory: "historyFiveHour", conversation: "conversationOverview" };
+    const activeTabs = { costs: "modelCosts", modelCostPeriod: "modelCostsOverall", rateHistory: "historyFiveHour", conversation: "conversationOverview", conversationCostMode: "conversationNormalTurns" };
     const stopMonitorButton = document.getElementById("stopMonitor");
     const turnPageSize = 10;
     let stopped = false;
@@ -621,9 +621,6 @@
 
     function renderConversationNoCompaction(row) {
       const rows = row?.NoCompactionTurnRows || [];
-      if (!row) {
-        return `<p class="muted">Choose a session from Overview to analyze its no-compaction API scenario.</p>`;
-      }
       if (rows.length === 0) {
         return `<h3>No-compaction API Scenario</h3><p class="muted">No turn-level token usage found for this session.</p>`;
       }
@@ -632,12 +629,7 @@
       selectedConversationPage = Math.max(1, Math.min(selectedConversationPage, totalPages));
       const start = (selectedConversationPage - 1) * turnPageSize;
       const pageRows = rows.slice(start, start + turnPageSize);
-      const sourceLine = `<div class="source">
-        <div>Session: ${esc(row.Session || "")}</div>
-        <div>Source: ${esc(row.SourceFile || "")}</div>
-      </div>`;
-
-      return `${sourceLine}<h3>No-compaction API Scenario</h3>
+      return `<h3>No-compaction API Scenario</h3>
         ${renderNoCompactionCostSummary(row)}
         ${table(pageRows, [
           { key: "Turn", label: "Turn", number: true },
@@ -658,6 +650,18 @@
           <button class="pager-button conversation-page" type="button" data-page="next" ${selectedConversationPage >= totalPages ? "disabled" : ""}>Next</button>
         </div>
         <p class="source">Scenario assumes no compaction and applies API USD pricing. Eligible models switch to long-context pricing when cumulative conversation input reaches 270,000 tokens.</p>`;
+    }
+
+    function renderConversationCostMode(row) {
+      const active = activeTabs.conversationCostMode || "conversationNormalTurns";
+      const tabButtons = [
+        { id: "conversationNormalTurns", label: "Normal" },
+        { id: "conversationNoCompactionTurns", label: "No-compaction API" }
+      ].map((tab) => `<button class="tab ${active === tab.id ? "active" : ""}" type="button" data-tab-scope="conversationCostMode" data-tab="${tab.id}">${esc(tab.label)}</button>`).join("");
+
+      return `<div class="tabs" role="tablist">${tabButtons}</div>
+        <div id="conversationNormalTurns" class="tab-panel" data-tab-scope="conversationCostMode" ${active === "conversationNormalTurns" ? "" : "hidden"}>${renderTurnBreakdown(row)}</div>
+        <div id="conversationNoCompactionTurns" class="tab-panel" data-tab-scope="conversationCostMode" ${active === "conversationNoCompactionTurns" ? "" : "hidden"}>${renderConversationNoCompaction(row)}</div>`;
     }
 
     function renderConversationAnalysis(row) {
@@ -682,7 +686,7 @@
         { key: "Reasoning", label: "Reasoning", number: true }
       ]);
 
-      return `${sourceLine}<h3>Overall</h3>${summary}${renderTurnBreakdown(row)}`;
+      return `${sourceLine}<h3>Overall</h3>${summary}${renderConversationCostMode(row)}`;
     }
 
     function setConversationTab(tabId) {
@@ -694,7 +698,7 @@
         item.classList.toggle("active", item.dataset.tab === tabId);
       });
       const hasSelection = !!findSelectedConversation();
-      ["conversationAnalysisTab", "conversationNoCompactionTab"].forEach((id) => {
+      ["conversationAnalysisTab"].forEach((id) => {
         const tab = document.getElementById(id);
         if (!tab) return;
         tab.disabled = !hasSelection;
@@ -710,7 +714,6 @@
       const selected = findSelectedConversation();
       document.getElementById("conversationOverview").innerHTML = renderConversationOverview(conversationRows);
       document.getElementById("conversationTokens").innerHTML = renderConversationAnalysis(selected);
-      document.getElementById("conversationNoCompactionRows").innerHTML = renderConversationNoCompaction(selected);
       setConversationTab(activeTabs.conversation || "conversationOverview");
     }
 
