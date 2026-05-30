@@ -468,15 +468,39 @@ function Get-TcpHttpRequest {
     param([System.Net.Sockets.TcpClient]$Client)
 
     $stream = $Client.GetStream()
-    $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::ASCII, $false, 1024, $true)
-    $requestLine = $reader.ReadLine()
-    while ($true) {
-        $line = $reader.ReadLine()
-        if ($null -eq $line -or $line -eq "") {
+    $Client.ReceiveTimeout = 75
+    $firstByte = $stream.ReadByte()
+    if ($firstByte -lt 0) {
+        return $null
+    }
+
+    $isAsciiLetter = ($firstByte -ge 65 -and $firstByte -le 90) -or ($firstByte -ge 97 -and $firstByte -le 122)
+    if (-not $isAsciiLetter) {
+        return $null
+    }
+
+    $Client.ReceiveTimeout = 1000
+    $bytes = New-Object 'System.Collections.Generic.List[byte]'
+    $bytes.Add([byte]$firstByte) | Out-Null
+    $maxHeaderBytes = 16384
+    while ($bytes.Count -lt $maxHeaderBytes) {
+        $nextByte = $stream.ReadByte()
+        if ($nextByte -lt 0) {
+            break
+        }
+
+        $bytes.Add([byte]$nextByte) | Out-Null
+        $count = $bytes.Count
+        if (
+            ($count -ge 4 -and $bytes[($count - 4)] -eq 13 -and $bytes[($count - 3)] -eq 10 -and $bytes[($count - 2)] -eq 13 -and $bytes[($count - 1)] -eq 10) -or
+            ($count -ge 2 -and $bytes[($count - 2)] -eq 10 -and $bytes[($count - 1)] -eq 10)
+        ) {
             break
         }
     }
 
+    $requestText = [System.Text.Encoding]::ASCII.GetString($bytes.ToArray())
+    $requestLine = ($requestText -split "\r?\n", 2)[0]
     if ([string]::IsNullOrWhiteSpace($requestLine)) {
         return $null
     }
@@ -631,7 +655,6 @@ try {
     while (-not $shutdownRequested) {
         $client = $listener.AcceptTcpClient()
         try {
-            $client.ReceiveTimeout = 1000
             $client.SendTimeout = 10000
             $request = Get-TcpHttpRequest $client
             if ($null -eq $request) {
