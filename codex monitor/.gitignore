@@ -2,6 +2,21 @@
 **/bin/
 **/obj/
 
+# Published .NET app artifacts to commit
+!net/bin/
+net/bin/*
+!net/bin/Release/
+net/bin/Release/*
+!net/bin/Release/net8.0/
+net/bin/Release/net8.0/*
+!net/bin/Release/net8.0/win-x64/
+net/bin/Release/net8.0/win-x64/*
+!net/bin/Release/net8.0/win-x64/publish/
+net/bin/Release/net8.0/win-x64/publish/*
+!net/bin/Release/net8.0/win-x64/publish/codex-usage-monitor.exe
+!net/bin/Release/net8.0/win-x64/publish/dashboard/
+!net/bin/Release/net8.0/win-x64/publish/dashboard/**
+
 # .NET user/local files
 *.user
 *.suo
