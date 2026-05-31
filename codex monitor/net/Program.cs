@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Microsoft.Data.Sqlite;
 
 var options = MonitorOptions.Parse(args);
 var monitor = new UsageMonitor(options);
@@ -75,8 +76,11 @@ sealed class MonitorOptions
     public bool NoOpen { get; set; }
     public bool DisableRateLimitHistory { get; set; }
     public bool BackfillRateLimitHistory { get; set; }
+    public bool DisableSqliteCache { get; set; }
+    public bool RebuildCache { get; set; }
     public int DashboardPort { get; set; } = 8787;
     public string DashboardRoot { get; set; } = Path.Combine(AppContext.BaseDirectory, "dashboard");
+    public string CacheDbPath { get; set; } = Path.Combine(GetMonitorDirectory(), "codex_usage_monitor.sqlite");
 
     public static MonitorOptions Parse(string[] args)
     {
@@ -133,6 +137,9 @@ sealed class MonitorOptions
                 case "noopen": options.NoOpen = truthy; break;
                 case "disableratelimithistory": options.DisableRateLimitHistory = truthy; break;
                 case "backfillratelimithistory": options.BackfillRateLimitHistory = truthy; break;
+                case "disablesqlitecache": options.DisableSqliteCache = truthy; break;
+                case "rebuildcache": options.RebuildCache = truthy; break;
+                case "cachedbpath": options.CacheDbPath = value ?? options.CacheDbPath; break;
                 case "dashboardport":
                 case "port": options.DashboardPort = ToInt(value, options.DashboardPort); break;
             }
@@ -144,6 +151,21 @@ sealed class MonitorOptions
     static int ToInt(string? value, int fallback) => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? result : fallback;
     static double ToDouble(string? value, double fallback) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) ? result : fallback;
     static bool Valid(string? value, params string[] values) => value is not null && values.Any(v => string.Equals(v, value, StringComparison.OrdinalIgnoreCase));
+
+    static string GetMonitorDirectory()
+    {
+        var baseDirectory = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        for (var directory = new DirectoryInfo(baseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "codex_usage_monitor.ps1")) ||
+                File.Exists(Path.Combine(directory.FullName, "start_codex_monitor.cmd")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        return baseDirectory;
+    }
 }
 
 sealed class UsageMonitor
@@ -156,12 +178,36 @@ sealed class UsageMonitor
     readonly Dictionary<string, CacheEntry<TokenBucket>> _noCompactionWindowCostCache = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, CacheEntry<TokenBucket>> _periodCostCache = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, CacheEntry<TokenBucket>> _noCompactionPeriodCostCache = new(StringComparer.OrdinalIgnoreCase);
+    readonly SqliteUsageCache? _usageCache;
 
-    public UsageMonitor(MonitorOptions options) => _options = options;
+    public UsageMonitor(MonitorOptions options)
+    {
+        _options = options;
+        if (_options.DisableSqliteCache)
+        {
+            return;
+        }
+
+        try
+        {
+            _usageCache = new SqliteUsageCache(_options.CacheDbPath);
+            _usageCache.Initialize(_options.RebuildCache);
+        }
+        catch (Exception ex)
+        {
+            if (_options.Once || _options.ConsoleMode)
+            {
+                Console.Error.WriteLine($"SQLite cache disabled; falling back to JSONL scanning. {ex.Message}");
+            }
+
+            _usageCache = null;
+        }
+    }
 
     public Snapshot? GetLatestSnapshot(bool forceCostRefresh = false)
     {
         var nowUtc = DateTime.UtcNow;
+        SyncUsageCache();
         var searches = new List<SearchPlan>();
         var overviewFiles = new List<FileInfo>();
 
@@ -252,11 +298,35 @@ sealed class UsageMonitor
             return new BackfillResult(0, 0, path, true);
         }
 
+        SyncUsageCache();
         var existing = GetRateLimitHistoryRows(_options.RateLimitHistoryDays);
         var backfill = GetRateLimitHistoryRowsFromSessions(_options.RateLimitHistoryDays);
         var merged = CompressRateLimitHistoryRows(existing.Concat(backfill), _options.RateLimitHistorySampleSeconds).ToList();
         SaveRateLimitHistoryRows(merged);
         return new BackfillResult(backfill.Count, merged.Count, path, false);
+    }
+
+    void SyncUsageCache()
+    {
+        if (_usageCache is null || !_usageCache.IsAvailable)
+        {
+            return;
+        }
+
+        try
+        {
+            _usageCache.SyncFiles(GetSessionFiles(0), IsArchivedSessionPath, ReadSessionUsageDeltasFromJsonl);
+        }
+        catch
+        {
+            _usageCache.Disable();
+        }
+    }
+
+    bool IsArchivedSessionPath(string path)
+    {
+        var archivedRoot = Path.Combine(_options.CodexHome, "archived_sessions");
+        return path.StartsWith(archivedRoot, StringComparison.OrdinalIgnoreCase);
     }
 
     List<TokenBucket> GetCachedTokenUsageByModel(bool force)
@@ -623,12 +693,30 @@ sealed class UsageMonitor
 
     List<UsageDeltaEvent> GetSessionUsageDeltas(string path)
     {
+        if (_usageCache is not null && _usageCache.TryGetUsageDeltas(path, out var rows))
+        {
+            return rows;
+        }
+
+        return ReadSessionUsageDeltasFromJsonl(path).Events;
+    }
+
+    UsageParseResult ReadSessionUsageDeltasFromJsonl(string path)
+    {
         var currentModel = GetSessionInitialModel(path);
         UsageMetrics? previousTotal = null;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var rows = new List<UsageDeltaEvent>();
+        var rateLimitRows = new List<RateLimitEvent>();
+        var sourceEstimateRows = new List<SourceEstimateEvent>();
+        var eventIndex = 0;
+        var rateLimitEventIndex = 0;
+        var sourceEventIndex = 0;
+        long cumulativeInput = 0;
+        DateTime? lastEventUtc = null;
+        var lines = ReadSessionLines(path, 0);
 
-        foreach (var line in ReadSessionLines(path, 0))
+        foreach (var line in lines)
         {
             if (line.Contains("\"turn_context\"", StringComparison.Ordinal))
             {
@@ -639,7 +727,13 @@ sealed class UsageMonitor
                 }
             }
 
-            if (!line.Contains("\"total_token_usage\"", StringComparison.Ordinal) && !line.Contains("\"last_token_usage\"", StringComparison.Ordinal))
+            var mayHaveTokenUsage = line.Contains("\"total_token_usage\"", StringComparison.Ordinal) || line.Contains("\"last_token_usage\"", StringComparison.Ordinal);
+            var mayHaveRateLimits =
+                line.Contains("\"rate_limits\"", StringComparison.Ordinal) ||
+                line.Contains("\"rateLimitStatus\"", StringComparison.Ordinal) ||
+                line.Contains("\"rate_limit_status\"", StringComparison.Ordinal);
+            var mayHaveSourceEstimate = LineMayHaveSourceEstimate(line);
+            if (!mayHaveTokenUsage && !mayHaveRateLimits && !mayHaveSourceEstimate)
             {
                 continue;
             }
@@ -651,46 +745,88 @@ sealed class UsageMonitor
             }
 
             var entry = doc.RootElement;
-            if (!IsTokenCountEvent(entry))
-            {
-                continue;
-            }
-
             var eventTime = GetEventTime(entry);
             if (eventTime is null)
             {
                 continue;
             }
 
+            if (lastEventUtc is null || eventTime.Value > lastEventUtc.Value)
+            {
+                lastEventUtc = eventTime.Value;
+            }
+
+            if (mayHaveRateLimits)
+            {
+                var payload = JsonTools.GetElement(entry, "payload");
+                var rateLimits = JsonTools.GetElement(payload, "rate_limits", "rateLimitStatus", "rate_limit_status");
+                if (rateLimits is not null)
+                {
+                    var planType = JsonTools.GetString(rateLimits, "plan_type", "planType");
+                    foreach (var rateRow in ConvertRateLimits(rateLimits))
+                    {
+                        rateLimitEventIndex++;
+                        rateLimitRows.Add(new RateLimitEvent(
+                            eventTime.Value,
+                            JsonTools.GetString(entry, "timestamp"),
+                            planType,
+                            rateRow.Window,
+                            rateRow.UsedPercent,
+                            rateRow.RemainingPercent,
+                            rateRow.WindowMinutes,
+                            FormatDisplayDateTime(rateRow.ResetsAt),
+                            rateLimitEventIndex));
+                    }
+                }
+            }
+
+            if (mayHaveSourceEstimate)
+            {
+                var estimate = GetSourceEstimateFromEntry(entry);
+                if (estimate is not null)
+                {
+                    sourceEventIndex++;
+                    sourceEstimateRows.Add(new SourceEstimateEvent(
+                        eventTime.Value,
+                        currentModel,
+                        estimate.Source,
+                        estimate.Side,
+                        estimate.Tokens,
+                        estimate.Chars,
+                        estimate.Attribution,
+                        sourceEventIndex));
+                }
+            }
+
+            if (!mayHaveTokenUsage || !IsTokenCountEvent(entry))
+            {
+                continue;
+            }
+
             var currentTotal = GetUsageMetricsFromEntry(entry, "total_token_usage", "totalTokenUsage");
-            if (currentTotal is null)
+            if (currentTotal is not null)
             {
-                continue;
-            }
+                var lastUsage = GetUsageMetricsFromEntry(entry, "last_token_usage", "lastTokenUsage");
+                var key = $"{eventTime.Value:o}|{MetricsKey(currentTotal)}|{MetricsKey(lastUsage)}";
+                if (!seen.Add(key) || SameMetrics(previousTotal, currentTotal))
+                {
+                    continue;
+                }
 
-            var lastUsage = GetUsageMetricsFromEntry(entry, "last_token_usage", "lastTokenUsage");
-            var key = $"{eventTime.Value:o}|{MetricsKey(currentTotal)}|{MetricsKey(lastUsage)}";
-            if (!seen.Add(key))
-            {
-                continue;
-            }
+                var delta = GetUsageDeltaMetrics(previousTotal, currentTotal, lastUsage);
+                previousTotal = currentTotal;
+                if (delta is null)
+                {
+                    continue;
+                }
 
-            if (SameMetrics(previousTotal, currentTotal))
-            {
-                continue;
+                eventIndex++;
+                cumulativeInput += delta.Input;
+                rows.Add(new UsageDeltaEvent(eventTime.Value, currentModel, delta, eventIndex, cumulativeInput));
             }
-
-            var delta = GetUsageDeltaMetrics(previousTotal, currentTotal, lastUsage);
-            previousTotal = currentTotal;
-            if (delta is null)
-            {
-                continue;
-            }
-
-            rows.Add(new UsageDeltaEvent(eventTime.Value, currentModel, delta));
         }
 
-        return rows;
+        return new UsageParseResult(rows, rateLimitRows, sourceEstimateRows, lines.Count, lastEventUtc);
     }
 
     List<TokenBucket> GetRollingTokenUsage(int limit, int tail)
@@ -958,14 +1094,15 @@ sealed class UsageMonitor
         }
 
         var oldestStart = windows.Min(w => w.StartUtc);
-        var buckets = new Dictionary<string, SourceEstimateBucket>(StringComparer.Ordinal);
-        foreach (var file in GetSessionFiles(limit))
+        var files = GetSessionFiles(limit).Where(file => file.LastWriteTimeUtc >= oldestStart).ToList();
+        if (tail <= 0 && _usageCache is not null && _usageCache.TryGetSourceEstimateBuckets(files, windows, oldestStart, out var cachedBuckets))
         {
-            if (file.LastWriteTimeUtc < oldestStart)
-            {
-                continue;
-            }
+            return GetSourceCostRows(cachedBuckets, modelRows);
+        }
 
+        var buckets = new Dictionary<string, SourceEstimateBucket>(StringComparer.Ordinal);
+        foreach (var file in files)
+        {
             var currentModel = GetSessionInitialModel(file.FullName);
             foreach (var line in ReadSessionLines(file.FullName, tail))
             {
@@ -1815,8 +1952,14 @@ sealed class UsageMonitor
     List<RateLimitHistoryRow> GetRateLimitHistoryRowsFromSessions(int days)
     {
         var cutoff = DateTime.UtcNow.AddDays(-Math.Max(1, days));
+        var files = GetSessionFilesSince(cutoff);
+        if (_usageCache is not null && _usageCache.TryGetRateLimitRows(files, cutoff, out var cachedRows))
+        {
+            return cachedRows;
+        }
+
         var rows = new List<RateLimitHistoryRow>();
-        foreach (var file in GetSessionFilesSince(cutoff))
+        foreach (var file in files)
         {
             var session = Path.GetFileNameWithoutExtension(file.Name);
             foreach (var line in ReadSessionLines(file.FullName, 0))
@@ -1880,6 +2023,708 @@ sealed class UsageMonitor
 
     record SearchPlan(IReadOnlyList<FileInfo> Files, int Tail, DateTime SinceUtc);
     record CacheEntry<T>(DateTime UpdatedAt, List<T> Rows);
+}
+
+sealed class SqliteUsageCache
+{
+    const int SchemaVersion = 2;
+
+    readonly string _path;
+    readonly object _gate = new();
+
+    public bool IsAvailable { get; private set; } = true;
+
+    public SqliteUsageCache(string path) => _path = Path.GetFullPath(path);
+
+    public void Initialize(bool rebuild)
+    {
+        lock (_gate)
+        {
+            SQLitePCL.Batteries_V2.Init();
+
+            var directory = Path.GetDirectoryName(_path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            using var connection = OpenConnection();
+            ExecuteNonQuery(connection, null, "PRAGMA journal_mode=WAL;");
+            ExecuteNonQuery(connection, null, "PRAGMA foreign_keys=ON;");
+            EnsureSchema(connection);
+
+            var version = GetSchemaVersion(connection);
+            if (version is not null && version != SchemaVersion)
+            {
+                ClearData(connection);
+            }
+
+            SetSchemaVersion(connection);
+            if (rebuild)
+            {
+                ClearData(connection);
+            }
+        }
+    }
+
+    public void Disable() => IsAvailable = false;
+
+    public void SyncFiles(IEnumerable<FileInfo> files, Func<string, bool> isArchived, Func<string, UsageParseResult> parseFile)
+    {
+        if (!IsAvailable)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            using var connection = OpenConnection();
+            ExecuteNonQuery(connection, null, "PRAGMA foreign_keys=ON;");
+            using var transaction = connection.BeginTransaction();
+
+            foreach (var file in files)
+            {
+                try
+                {
+                    file.Refresh();
+                    if (!file.Exists)
+                    {
+                        continue;
+                    }
+
+                    var path = file.FullName;
+                    var size = file.Length;
+                    var lastWriteUtc = file.LastWriteTimeUtc.ToString("o", CultureInfo.InvariantCulture);
+                    var state = GetFileState(connection, transaction, path);
+                    if (state is not null &&
+                        state.FileSizeBytes == size &&
+                        string.Equals(state.LastWriteUtc, lastWriteUtc, StringComparison.Ordinal) &&
+                        string.Equals(state.IndexStatus, "indexed", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var sessionId = Path.GetFileNameWithoutExtension(file.Name);
+                    var sessionFileId = EnsureSessionFile(connection, transaction, path, sessionId, isArchived(path), size, lastWriteUtc);
+                    SetFileStatus(connection, transaction, sessionFileId, "indexing", null);
+                    DeleteIndexedEvents(connection, transaction, sessionFileId);
+
+                    var parsed = parseFile(path);
+                    InsertTokenEvents(connection, transaction, sessionFileId, sessionId, parsed.Events);
+                    InsertRateLimitEvents(connection, transaction, sessionFileId, sessionId, parsed.RateLimitEvents);
+                    InsertSourceEstimateEvents(connection, transaction, sessionFileId, sessionId, parsed.SourceEstimateEvents);
+                    UpdateIndexedFile(connection, transaction, sessionFileId, size, lastWriteUtc, parsed.LineCount, parsed.LastEventUtc);
+                }
+                catch (Exception ex)
+                {
+                    MarkFileError(connection, transaction, file.FullName, ex.Message);
+                }
+            }
+
+            transaction.Commit();
+        }
+    }
+
+    public bool TryGetUsageDeltas(string path, out List<UsageDeltaEvent> rows)
+    {
+        rows = [];
+        if (!IsAvailable)
+        {
+            return false;
+        }
+
+        try
+        {
+            lock (_gate)
+            {
+                using var connection = OpenConnection();
+                using var stateCommand = CreateCommand(connection, null, """
+                    SELECT id, index_status
+                    FROM session_files
+                    WHERE path = $path;
+                    """);
+                stateCommand.Parameters.AddWithValue("$path", path);
+                using var stateReader = stateCommand.ExecuteReader();
+                if (!stateReader.Read() || !string.Equals(stateReader.GetString(1), "indexed", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                var sessionFileId = stateReader.GetInt64(0);
+                stateReader.Close();
+
+                using var command = CreateCommand(connection, null, """
+                    SELECT event_index, event_utc, model, total_tokens, input_tokens, cached_input_tokens,
+                           output_tokens, reasoning_tokens, cumulative_input_tokens
+                    FROM token_events
+                    WHERE session_file_id = $session_file_id
+                    ORDER BY event_index;
+                    """);
+                command.Parameters.AddWithValue("$session_file_id", sessionFileId);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var timestamp = ParseUtc(reader.GetString(1)) ?? DateTime.MinValue;
+                    var metrics = new UsageMetrics(
+                        reader.GetInt64(3),
+                        reader.GetInt64(4),
+                        reader.GetInt64(5),
+                        reader.GetInt64(6),
+                        reader.GetInt64(7));
+                    rows.Add(new UsageDeltaEvent(timestamp, reader.GetString(2), metrics, reader.GetInt32(0), reader.GetInt64(8)));
+                }
+
+                return true;
+            }
+        }
+        catch
+        {
+            Disable();
+            rows = [];
+            return false;
+        }
+    }
+
+    public bool TryGetRateLimitRows(IReadOnlyList<FileInfo> files, DateTime cutoffUtc, out List<RateLimitHistoryRow> rows)
+    {
+        rows = [];
+        if (!IsAvailable)
+        {
+            return false;
+        }
+
+        try
+        {
+            lock (_gate)
+            {
+                using var connection = OpenConnection();
+                foreach (var file in files)
+                {
+                    var state = GetFileState(connection, null, file.FullName);
+                    if (state is null || !string.Equals(state.IndexStatus, "indexed", StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+
+                    using var command = CreateCommand(connection, null, """
+                        SELECT event_utc, source_timestamp, plan_type, window_name, used_percent,
+                               remaining_percent, window_minutes, resets_at_local
+                        FROM rate_limit_events
+                        WHERE session_file_id = $session_file_id
+                          AND event_utc >= $cutoff_utc
+                        ORDER BY event_utc, window_name;
+                        """);
+                    command.Parameters.AddWithValue("$session_file_id", state.Id);
+                    command.Parameters.AddWithValue("$cutoff_utc", cutoffUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        var sampledAt = ParseUtc(reader.GetString(0));
+                        if (sampledAt is null)
+                        {
+                            continue;
+                        }
+
+                        rows.Add(new RateLimitHistoryRow
+                        {
+                            SampledAt = sampledAt.Value,
+                            EventTimestamp = GetNullableString(reader, 1),
+                            PlanType = GetNullableString(reader, 2),
+                            Window = reader.GetString(3),
+                            UsedPercent = reader.GetDouble(4),
+                            RemainingPercent = reader.GetDouble(5),
+                            WindowMinutes = reader.IsDBNull(6) ? null : reader.GetDouble(6),
+                            ResetsAt = GetNullableString(reader, 7),
+                            Session = Path.GetFileNameWithoutExtension(file.Name),
+                            SourceFile = file.FullName
+                        });
+                    }
+                }
+
+                rows = rows.OrderBy(row => row.SampledAt).ThenBy(row => row.Window).ToList();
+                return true;
+            }
+        }
+        catch
+        {
+            Disable();
+            rows = [];
+            return false;
+        }
+    }
+
+    public bool TryGetSourceEstimateBuckets(IReadOnlyList<FileInfo> files, IReadOnlyList<PeriodWindow> windows, DateTime oldestStartUtc, out List<SourceEstimateBucket> rows)
+    {
+        rows = [];
+        if (!IsAvailable)
+        {
+            return false;
+        }
+
+        try
+        {
+            lock (_gate)
+            {
+                using var connection = OpenConnection();
+                var buckets = new Dictionary<string, SourceEstimateBucket>(StringComparer.Ordinal);
+                foreach (var file in files)
+                {
+                    var state = GetFileState(connection, null, file.FullName);
+                    if (state is null || !string.Equals(state.IndexStatus, "indexed", StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+
+                    using var command = CreateCommand(connection, null, """
+                        SELECT event_utc, model, source, side, estimated_tokens, estimated_chars, attribution
+                        FROM source_estimate_events
+                        WHERE session_file_id = $session_file_id
+                          AND event_utc >= $oldest_start_utc;
+                        """);
+                    command.Parameters.AddWithValue("$session_file_id", state.Id);
+                    command.Parameters.AddWithValue("$oldest_start_utc", oldestStartUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        var eventTime = ParseUtc(reader.GetString(0));
+                        if (eventTime is null)
+                        {
+                            continue;
+                        }
+
+                        var model = reader.GetString(1);
+                        var estimate = new SourceEstimate(
+                            reader.GetString(2),
+                            reader.GetString(3),
+                            reader.GetInt64(4),
+                            reader.GetInt64(5),
+                            reader.GetString(6));
+
+                        foreach (var window in windows.Where(w => eventTime.Value >= w.StartUtc))
+                        {
+                            AddSourceEstimateBucket(buckets, window.Name, model, estimate);
+                        }
+                    }
+                }
+
+                rows = buckets.Values.ToList();
+                return true;
+            }
+        }
+        catch
+        {
+            Disable();
+            rows = [];
+            return false;
+        }
+    }
+
+    static void AddSourceEstimateBucket(Dictionary<string, SourceEstimateBucket> buckets, string window, string model, SourceEstimate estimate)
+    {
+        var key = $"{window}|{model}|{estimate.Source}";
+        if (!buckets.TryGetValue(key, out var bucket))
+        {
+            bucket = new SourceEstimateBucket { Window = window, Model = model, Source = estimate.Source };
+            buckets[key] = bucket;
+        }
+
+        if (estimate.Side == "Input") bucket.EstimatedInputTokens += estimate.Tokens;
+        else bucket.EstimatedOutputTokens += estimate.Tokens;
+        bucket.EstimatedChars += estimate.Chars;
+        bucket.Attribution = bucket.Attribution != estimate.Attribution ? "Mixed text estimate" : estimate.Attribution;
+        bucket.Events++;
+    }
+
+    SqliteConnection OpenConnection()
+    {
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = _path,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Shared
+        };
+        var connection = new SqliteConnection(builder.ToString());
+        connection.Open();
+        return connection;
+    }
+
+    static void EnsureSchema(SqliteConnection connection)
+    {
+        ExecuteNonQuery(connection, null, """
+            CREATE TABLE IF NOT EXISTS schema_meta (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            """);
+
+        ExecuteNonQuery(connection, null, """
+            CREATE TABLE IF NOT EXISTS session_files (
+              id INTEGER PRIMARY KEY,
+              path TEXT NOT NULL UNIQUE,
+              session_id TEXT NOT NULL,
+              is_archived INTEGER NOT NULL DEFAULT 0,
+              file_size_bytes INTEGER NOT NULL,
+              last_write_utc TEXT NOT NULL,
+              line_count INTEGER NOT NULL DEFAULT 0,
+              last_indexed_utc TEXT,
+              last_event_utc TEXT,
+              index_status TEXT NOT NULL DEFAULT 'pending',
+              error_message TEXT
+            );
+            """);
+
+        ExecuteNonQuery(connection, null, """
+            CREATE TABLE IF NOT EXISTS token_events (
+              id INTEGER PRIMARY KEY,
+              session_file_id INTEGER NOT NULL,
+              session_id TEXT NOT NULL,
+              event_index INTEGER NOT NULL,
+              event_utc TEXT NOT NULL,
+              model TEXT NOT NULL,
+              total_tokens INTEGER NOT NULL,
+              input_tokens INTEGER NOT NULL,
+              cached_input_tokens INTEGER NOT NULL,
+              output_tokens INTEGER NOT NULL,
+              reasoning_tokens INTEGER NOT NULL,
+              cumulative_input_tokens INTEGER NOT NULL DEFAULT 0,
+              FOREIGN KEY(session_file_id) REFERENCES session_files(id) ON DELETE CASCADE,
+              UNIQUE(session_file_id, event_index)
+            );
+            """);
+
+        ExecuteNonQuery(connection, null, """
+            CREATE TABLE IF NOT EXISTS rate_limit_events (
+              id INTEGER PRIMARY KEY,
+              session_file_id INTEGER NOT NULL,
+              session_id TEXT NOT NULL,
+              event_index INTEGER NOT NULL,
+              event_utc TEXT NOT NULL,
+              source_timestamp TEXT,
+              plan_type TEXT,
+              window_name TEXT NOT NULL,
+              used_percent REAL NOT NULL,
+              remaining_percent REAL NOT NULL,
+              window_minutes REAL,
+              resets_at_local TEXT,
+              FOREIGN KEY(session_file_id) REFERENCES session_files(id) ON DELETE CASCADE,
+              UNIQUE(session_file_id, event_index, window_name)
+            );
+            """);
+
+        ExecuteNonQuery(connection, null, """
+            CREATE TABLE IF NOT EXISTS source_estimate_events (
+              id INTEGER PRIMARY KEY,
+              session_file_id INTEGER NOT NULL,
+              session_id TEXT NOT NULL,
+              event_index INTEGER NOT NULL,
+              event_utc TEXT NOT NULL,
+              model TEXT NOT NULL,
+              source TEXT NOT NULL,
+              side TEXT NOT NULL,
+              estimated_tokens INTEGER NOT NULL,
+              estimated_chars INTEGER NOT NULL,
+              attribution TEXT NOT NULL,
+              FOREIGN KEY(session_file_id) REFERENCES session_files(id) ON DELETE CASCADE,
+              UNIQUE(session_file_id, event_index)
+            );
+            """);
+
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_session_files_write ON session_files(last_write_utc);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_token_events_time ON token_events(event_utc);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_token_events_model_time ON token_events(model, event_utc);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id, event_index);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_rate_limit_events_time ON rate_limit_events(event_utc);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_rate_limit_events_session ON rate_limit_events(session_id, event_index);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_source_estimate_events_time ON source_estimate_events(event_utc);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_source_estimate_events_session ON source_estimate_events(session_id, event_index);");
+    }
+
+    static int? GetSchemaVersion(SqliteConnection connection)
+    {
+        using var command = CreateCommand(connection, null, "SELECT value FROM schema_meta WHERE key = 'schema_version';");
+        var value = command.ExecuteScalar()?.ToString();
+        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var version) ? version : null;
+    }
+
+    static void SetSchemaVersion(SqliteConnection connection)
+    {
+        using var command = CreateCommand(connection, null, """
+            INSERT INTO schema_meta(key, value)
+            VALUES('schema_version', $version)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """);
+        command.Parameters.AddWithValue("$version", SchemaVersion.ToString(CultureInfo.InvariantCulture));
+        command.ExecuteNonQuery();
+    }
+
+    static void ClearData(SqliteConnection connection)
+    {
+        ExecuteNonQuery(connection, null, "DELETE FROM source_estimate_events;");
+        ExecuteNonQuery(connection, null, "DELETE FROM rate_limit_events;");
+        ExecuteNonQuery(connection, null, "DELETE FROM token_events;");
+        ExecuteNonQuery(connection, null, "DELETE FROM session_files;");
+    }
+
+    static SessionFileState? GetFileState(SqliteConnection connection, SqliteTransaction? transaction, string path)
+    {
+        using var command = CreateCommand(connection, transaction, """
+            SELECT id, file_size_bytes, last_write_utc, index_status
+            FROM session_files
+            WHERE path = $path;
+            """);
+        command.Parameters.AddWithValue("$path", path);
+        using var reader = command.ExecuteReader();
+        return reader.Read()
+            ? new SessionFileState(reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3))
+            : null;
+    }
+
+    static long EnsureSessionFile(SqliteConnection connection, SqliteTransaction transaction, string path, string sessionId, bool isArchived, long size, string lastWriteUtc)
+    {
+        using (var insert = CreateCommand(connection, transaction, """
+            INSERT OR IGNORE INTO session_files(path, session_id, is_archived, file_size_bytes, last_write_utc, index_status)
+            VALUES($path, $session_id, $is_archived, $file_size_bytes, $last_write_utc, 'pending');
+            """))
+        {
+            insert.Parameters.AddWithValue("$path", path);
+            insert.Parameters.AddWithValue("$session_id", sessionId);
+            insert.Parameters.AddWithValue("$is_archived", isArchived ? 1 : 0);
+            insert.Parameters.AddWithValue("$file_size_bytes", size);
+            insert.Parameters.AddWithValue("$last_write_utc", lastWriteUtc);
+            insert.ExecuteNonQuery();
+        }
+
+        using var update = CreateCommand(connection, transaction, """
+            UPDATE session_files
+            SET session_id = $session_id,
+                is_archived = $is_archived,
+                file_size_bytes = $file_size_bytes,
+                last_write_utc = $last_write_utc
+            WHERE path = $path;
+            """);
+        update.Parameters.AddWithValue("$path", path);
+        update.Parameters.AddWithValue("$session_id", sessionId);
+        update.Parameters.AddWithValue("$is_archived", isArchived ? 1 : 0);
+        update.Parameters.AddWithValue("$file_size_bytes", size);
+        update.Parameters.AddWithValue("$last_write_utc", lastWriteUtc);
+        update.ExecuteNonQuery();
+
+        using var select = CreateCommand(connection, transaction, "SELECT id FROM session_files WHERE path = $path;");
+        select.Parameters.AddWithValue("$path", path);
+        return Convert.ToInt64(select.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    static void DeleteIndexedEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId)
+    {
+        foreach (var table in new[] { "source_estimate_events", "rate_limit_events", "token_events" })
+        {
+            using var command = CreateCommand(connection, transaction, $"DELETE FROM {table} WHERE session_file_id = $session_file_id;");
+            command.Parameters.AddWithValue("$session_file_id", sessionFileId);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    static void InsertTokenEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, string sessionId, IReadOnlyList<UsageDeltaEvent> events)
+    {
+        using var command = CreateCommand(connection, transaction, """
+            INSERT INTO token_events(
+              session_file_id, session_id, event_index, event_utc, model,
+              total_tokens, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens,
+              cumulative_input_tokens
+            )
+            VALUES(
+              $session_file_id, $session_id, $event_index, $event_utc, $model,
+              $total_tokens, $input_tokens, $cached_input_tokens, $output_tokens, $reasoning_tokens,
+              $cumulative_input_tokens
+            );
+            """);
+
+        var sessionFileParam = command.Parameters.Add("$session_file_id", SqliteType.Integer);
+        var sessionParam = command.Parameters.Add("$session_id", SqliteType.Text);
+        var indexParam = command.Parameters.Add("$event_index", SqliteType.Integer);
+        var timestampParam = command.Parameters.Add("$event_utc", SqliteType.Text);
+        var modelParam = command.Parameters.Add("$model", SqliteType.Text);
+        var totalParam = command.Parameters.Add("$total_tokens", SqliteType.Integer);
+        var inputParam = command.Parameters.Add("$input_tokens", SqliteType.Integer);
+        var cachedInputParam = command.Parameters.Add("$cached_input_tokens", SqliteType.Integer);
+        var outputParam = command.Parameters.Add("$output_tokens", SqliteType.Integer);
+        var reasoningParam = command.Parameters.Add("$reasoning_tokens", SqliteType.Integer);
+        var cumulativeInputParam = command.Parameters.Add("$cumulative_input_tokens", SqliteType.Integer);
+
+        foreach (var usageEvent in events)
+        {
+            sessionFileParam.Value = sessionFileId;
+            sessionParam.Value = sessionId;
+            indexParam.Value = usageEvent.EventIndex;
+            timestampParam.Value = usageEvent.Timestamp.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+            modelParam.Value = string.IsNullOrWhiteSpace(usageEvent.Model) ? "unknown" : usageEvent.Model;
+            totalParam.Value = usageEvent.Metrics.Total;
+            inputParam.Value = usageEvent.Metrics.Input;
+            cachedInputParam.Value = usageEvent.Metrics.CachedInput;
+            outputParam.Value = usageEvent.Metrics.Output;
+            reasoningParam.Value = usageEvent.Metrics.Reasoning;
+            cumulativeInputParam.Value = usageEvent.CumulativeInput;
+            command.ExecuteNonQuery();
+        }
+    }
+
+    static void InsertRateLimitEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, string sessionId, IReadOnlyList<RateLimitEvent> events)
+    {
+        using var command = CreateCommand(connection, transaction, """
+            INSERT INTO rate_limit_events(
+              session_file_id, session_id, event_index, event_utc, source_timestamp, plan_type,
+              window_name, used_percent, remaining_percent, window_minutes, resets_at_local
+            )
+            VALUES(
+              $session_file_id, $session_id, $event_index, $event_utc, $source_timestamp, $plan_type,
+              $window_name, $used_percent, $remaining_percent, $window_minutes, $resets_at_local
+            );
+            """);
+
+        var sessionFileParam = command.Parameters.Add("$session_file_id", SqliteType.Integer);
+        var sessionParam = command.Parameters.Add("$session_id", SqliteType.Text);
+        var indexParam = command.Parameters.Add("$event_index", SqliteType.Integer);
+        var timestampParam = command.Parameters.Add("$event_utc", SqliteType.Text);
+        var sourceTimestampParam = command.Parameters.Add("$source_timestamp", SqliteType.Text);
+        var planTypeParam = command.Parameters.Add("$plan_type", SqliteType.Text);
+        var windowParam = command.Parameters.Add("$window_name", SqliteType.Text);
+        var usedParam = command.Parameters.Add("$used_percent", SqliteType.Real);
+        var remainingParam = command.Parameters.Add("$remaining_percent", SqliteType.Real);
+        var windowMinutesParam = command.Parameters.Add("$window_minutes", SqliteType.Real);
+        var resetsAtParam = command.Parameters.Add("$resets_at_local", SqliteType.Text);
+
+        foreach (var rateEvent in events)
+        {
+            sessionFileParam.Value = sessionFileId;
+            sessionParam.Value = sessionId;
+            indexParam.Value = rateEvent.EventIndex;
+            timestampParam.Value = rateEvent.Timestamp.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+            sourceTimestampParam.Value = rateEvent.EventTimestamp is null ? DBNull.Value : rateEvent.EventTimestamp;
+            planTypeParam.Value = rateEvent.PlanType is null ? DBNull.Value : rateEvent.PlanType;
+            windowParam.Value = string.IsNullOrWhiteSpace(rateEvent.Window) ? "unknown" : rateEvent.Window;
+            usedParam.Value = rateEvent.UsedPercent;
+            remainingParam.Value = rateEvent.RemainingPercent;
+            windowMinutesParam.Value = rateEvent.WindowMinutes is null ? DBNull.Value : rateEvent.WindowMinutes.Value;
+            resetsAtParam.Value = rateEvent.ResetsAt is null ? DBNull.Value : rateEvent.ResetsAt;
+            command.ExecuteNonQuery();
+        }
+    }
+
+    static void InsertSourceEstimateEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, string sessionId, IReadOnlyList<SourceEstimateEvent> events)
+    {
+        using var command = CreateCommand(connection, transaction, """
+            INSERT INTO source_estimate_events(
+              session_file_id, session_id, event_index, event_utc, model, source, side,
+              estimated_tokens, estimated_chars, attribution
+            )
+            VALUES(
+              $session_file_id, $session_id, $event_index, $event_utc, $model, $source, $side,
+              $estimated_tokens, $estimated_chars, $attribution
+            );
+            """);
+
+        var sessionFileParam = command.Parameters.Add("$session_file_id", SqliteType.Integer);
+        var sessionParam = command.Parameters.Add("$session_id", SqliteType.Text);
+        var indexParam = command.Parameters.Add("$event_index", SqliteType.Integer);
+        var timestampParam = command.Parameters.Add("$event_utc", SqliteType.Text);
+        var modelParam = command.Parameters.Add("$model", SqliteType.Text);
+        var sourceParam = command.Parameters.Add("$source", SqliteType.Text);
+        var sideParam = command.Parameters.Add("$side", SqliteType.Text);
+        var tokensParam = command.Parameters.Add("$estimated_tokens", SqliteType.Integer);
+        var charsParam = command.Parameters.Add("$estimated_chars", SqliteType.Integer);
+        var attributionParam = command.Parameters.Add("$attribution", SqliteType.Text);
+
+        foreach (var sourceEvent in events)
+        {
+            sessionFileParam.Value = sessionFileId;
+            sessionParam.Value = sessionId;
+            indexParam.Value = sourceEvent.EventIndex;
+            timestampParam.Value = sourceEvent.Timestamp.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+            modelParam.Value = string.IsNullOrWhiteSpace(sourceEvent.Model) ? "unknown" : sourceEvent.Model;
+            sourceParam.Value = sourceEvent.Source;
+            sideParam.Value = sourceEvent.Side;
+            tokensParam.Value = sourceEvent.Tokens;
+            charsParam.Value = sourceEvent.Chars;
+            attributionParam.Value = sourceEvent.Attribution;
+            command.ExecuteNonQuery();
+        }
+    }
+
+    static void UpdateIndexedFile(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, long size, string lastWriteUtc, int lineCount, DateTime? lastEventUtc)
+    {
+        using var command = CreateCommand(connection, transaction, """
+            UPDATE session_files
+            SET file_size_bytes = $file_size_bytes,
+                last_write_utc = $last_write_utc,
+                line_count = $line_count,
+                last_indexed_utc = $last_indexed_utc,
+                last_event_utc = $last_event_utc,
+                index_status = 'indexed',
+                error_message = NULL
+            WHERE id = $id;
+            """);
+        command.Parameters.AddWithValue("$id", sessionFileId);
+        command.Parameters.AddWithValue("$file_size_bytes", size);
+        command.Parameters.AddWithValue("$last_write_utc", lastWriteUtc);
+        command.Parameters.AddWithValue("$line_count", lineCount);
+        command.Parameters.AddWithValue("$last_indexed_utc", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$last_event_utc", lastEventUtc is null ? DBNull.Value : lastEventUtc.Value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
+        command.ExecuteNonQuery();
+    }
+
+    static void SetFileStatus(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, string status, string? error)
+    {
+        using var command = CreateCommand(connection, transaction, """
+            UPDATE session_files
+            SET index_status = $status,
+                error_message = $error
+            WHERE id = $id;
+            """);
+        command.Parameters.AddWithValue("$id", sessionFileId);
+        command.Parameters.AddWithValue("$status", status);
+        command.Parameters.AddWithValue("$error", error is null ? DBNull.Value : error);
+        command.ExecuteNonQuery();
+    }
+
+    static void MarkFileError(SqliteConnection connection, SqliteTransaction transaction, string path, string error)
+    {
+        using var command = CreateCommand(connection, transaction, """
+            UPDATE session_files
+            SET index_status = 'error',
+                error_message = $error
+            WHERE path = $path;
+            """);
+        command.Parameters.AddWithValue("$path", path);
+        command.Parameters.AddWithValue("$error", error);
+        command.ExecuteNonQuery();
+    }
+
+    static DateTime? ParseUtc(string? value) =>
+        DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var dto)
+            ? dto.UtcDateTime
+            : null;
+
+    static string? GetNullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+
+    static SqliteCommand CreateCommand(SqliteConnection connection, SqliteTransaction? transaction, string text)
+    {
+        var command = connection.CreateCommand();
+        command.CommandText = text;
+        if (transaction is not null)
+        {
+            command.Transaction = transaction;
+        }
+
+        return command;
+    }
+
+    static void ExecuteNonQuery(SqliteConnection connection, SqliteTransaction? transaction, string text)
+    {
+        using var command = CreateCommand(connection, transaction, text);
+        command.ExecuteNonQuery();
+    }
+
+    record SessionFileState(long Id, long FileSizeBytes, string LastWriteUtc, string IndexStatus);
 }
 
 sealed class DashboardServer
@@ -2746,7 +3591,10 @@ sealed class SourceCostRow : ICostRow
 }
 
 record UsageMetrics(long Total, long Input, long CachedInput, long Output, long Reasoning);
-record UsageDeltaEvent(DateTime Timestamp, string Model, UsageMetrics Metrics);
+record UsageDeltaEvent(DateTime Timestamp, string Model, UsageMetrics Metrics, int EventIndex = 0, long CumulativeInput = 0);
+record RateLimitEvent(DateTime Timestamp, string? EventTimestamp, string? PlanType, string? Window, double UsedPercent, double RemainingPercent, double? WindowMinutes, string? ResetsAt, int EventIndex = 0);
+record SourceEstimateEvent(DateTime Timestamp, string Model, string Source, string Side, long Tokens, long Chars, string Attribution, int EventIndex = 0);
+record UsageParseResult(List<UsageDeltaEvent> Events, List<RateLimitEvent> RateLimitEvents, List<SourceEstimateEvent> SourceEstimateEvents, int LineCount, DateTime? LastEventUtc);
 record PricingRecord(string Basis, string Unit, string Mode, string Model, string ContextBand, double InputPerMillion, double CachedInputPerMillion, double OutputPerMillion);
 record PeriodWindow(string Group, string Name, string Label, DateTime StartUtc, DateTime EndUtc, int SortOrder, int RefreshSeconds);
 record SourceEstimate(string Source, string Side, long Tokens, long Chars, string Attribution);

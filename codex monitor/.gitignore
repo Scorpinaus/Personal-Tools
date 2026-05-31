@@ -16,6 +16,9 @@ coverage.*
 *.coverage
 *.coveragexml
 
+# Local monitor cache
+codex_usage_monitor.sqlite*
+
 # Editor and OS local files
 .vscode/
 .idea/
