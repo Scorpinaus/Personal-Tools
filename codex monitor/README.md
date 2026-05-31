@@ -58,7 +58,30 @@ cd net
 dotnet run -- -NoOpen -DashboardPort 8787
 ```
 
-See `net/README.md` for publish and cache details.
+The published Windows app is committed at:
+
+```text
+net/bin/Release/net8.0/win-x64/publish/codex-usage-monitor.exe
+```
+
+Run it directly from the publish folder:
+
+```powershell
+.\net\bin\Release\net8.0\win-x64\publish\codex-usage-monitor.exe
+```
+
+Keep the published executable and dashboard folder together:
+
+```text
+net/bin/Release/net8.0/win-x64/publish/
+  codex-usage-monitor.exe
+  dashboard/
+    index.html
+    styles.css
+    app.js
+```
+
+The `dashboard/` folder is required because the executable serves those files for the browser UI. See `net/README.md` for publish and cache details.
 
 ## Project Layout
 
@@ -69,6 +92,8 @@ codex_usage_dashboard.ps1          Dashboard wrapper script
 start_codex_monitor.cmd            Windows launcher
 stop_codex_monitor.cmd             Stop helper
 net/                               .NET 8 implementation
+net/bin/Release/net8.0/win-x64/publish/
+                                   Published Windows app and dashboard assets
 ```
 
 ## Notes
