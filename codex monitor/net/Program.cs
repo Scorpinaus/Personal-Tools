@@ -245,6 +245,7 @@ sealed class UsageMonitor
             }
 
             var rateLimits = rateLimitMatch?.RateLimits ?? usageMatch?.RateLimits;
+            var rateLimitRows = ConvertRateLimits(rateLimits);
             var modelRows = GetCachedTokenUsageByModel(forceCostRefresh);
             var noCompactionModelRows = GetCachedNoCompactionTokenUsageByModel(forceCostRefresh);
             var periodWindows = GetModelPeriodWindowDefinitions();
@@ -257,8 +258,10 @@ sealed class UsageMonitor
                 SourceFile = sourceMatch.SourceFile,
                 Session = sourceMatch.Session,
                 PlanType = JsonTools.GetString(rateLimits, "plan_type", "planType") ?? GetLatestPlanType(legacyLimit, legacyTail),
-                RateLimitRows = ConvertRateLimits(rateLimits),
+                RateLimitRows = rateLimitRows,
+                RateLimitTokenUsageRows = GetRateLimitTokenUsageRows(rateLimitRows, _options.RollingMaxFiles),
                 RollingTokenRows = GetRollingTokenUsage(_options.RollingMaxFiles, _options.RollingTailLines),
+                DailyTokenUsageRows = GetDailyTokenUsageRows(_options.CostMaxFiles, 365),
                 ModelTokenRows = modelRows,
                 NoCompactionModelTokenRows = noCompactionModelRows,
                 ModelTokenPeriodRows = modelPeriodRows,
@@ -481,6 +484,7 @@ sealed class UsageMonitor
         {
             Window = name,
             UsedPercent = Math.Round(used, 2),
+            RawUsedPercent = used,
             RemainingPercent = Math.Round(Math.Max(0.0, Math.Min(100.0, 100.0 - used)), 2),
             WindowMinutes = minutes,
             ResetsAt = resetEpoch is null ? null : DateTimeOffset.FromUnixTimeSeconds(resetEpoch.Value).LocalDateTime
@@ -504,15 +508,31 @@ sealed class UsageMonitor
             return null;
         }
 
+        var inputTokens = JsonTools.GetNullableLong(usage, "input_tokens", "inputTokens");
+        var cachedInputTokens = JsonTools.GetNullableLong(usage, "cached_input_tokens", "cachedInputTokens");
+
         return new TokenUsageRow
         {
             Scope = label,
             Total = JsonTools.GetNullableLong(usage, "total_tokens", "totalTokens"),
-            Input = JsonTools.GetNullableLong(usage, "input_tokens", "inputTokens"),
-            CachedInput = JsonTools.GetNullableLong(usage, "cached_input_tokens", "cachedInputTokens"),
+            Input = inputTokens,
+            CachedInput = cachedInputTokens,
+            CacheHitRatioPercent = GetCacheHitRatioPercent(inputTokens, cachedInputTokens),
             Output = JsonTools.GetNullableLong(usage, "output_tokens", "outputTokens"),
             Reasoning = JsonTools.GetNullableLong(usage, "reasoning_output_tokens", "reasoningOutputTokens")
         };
+    }
+
+    static double? GetCacheHitRatioPercent(long? inputTokens, long? cachedInputTokens)
+    {
+        if ((inputTokens ?? 0) <= 0)
+        {
+            return null;
+        }
+
+        var input = inputTokens!.Value;
+        var cachedInput = Math.Min(input, Math.Max(0, cachedInputTokens ?? 0));
+        return Math.Round((double)cachedInput / input * 100.0, 2);
     }
 
     List<ConversationOverviewRow> GetConversationOverviewRows(IEnumerable<FileInfo> files)
@@ -573,6 +593,7 @@ sealed class UsageMonitor
                 Total = turn.Total,
                 Input = turn.Input,
                 CachedInput = turn.CachedInput,
+                CacheHitRatioPercent = turn.CacheHitRatioPercent,
                 NonCachedInput = turn.NonCachedInput,
                 Output = turn.Output,
                 Reasoning = turn.Reasoning,
@@ -613,6 +634,7 @@ sealed class UsageMonitor
                 Total = metrics.Total,
                 Input = metrics.Input,
                 CachedInput = metrics.CachedInput,
+                CacheHitRatioPercent = GetCacheHitRatioPercent(metrics.Input, metrics.CachedInput),
                 NonCachedInput = Math.Max(0, metrics.Input - metrics.CachedInput),
                 Output = metrics.Output,
                 Reasoning = metrics.Reasoning,
@@ -855,6 +877,151 @@ sealed class UsageMonitor
         }
 
         return [fiveHour, week, month];
+    }
+
+    List<DailyTokenUsageRow> GetDailyTokenUsageRows(int limit, int days)
+    {
+        var safeDays = Math.Max(1, days);
+        var todayLocal = DateTime.Now.Date;
+        var startLocal = todayLocal.AddDays(-safeDays + 1);
+        var endLocal = todayLocal.AddDays(1);
+        var startUtc = startLocal.ToUniversalTime();
+        var endUtc = endLocal.ToUniversalTime();
+        var buckets = new Dictionary<string, DailyTokenUsageRow>(StringComparer.Ordinal);
+
+        for (var index = 0; index < safeDays; index++)
+        {
+            var date = startLocal.AddDays(index).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            buckets[date] = new DailyTokenUsageRow { Date = date };
+        }
+
+        foreach (var file in GetSessionFiles(limit))
+        {
+            if (file.LastWriteTimeUtc < startUtc)
+            {
+                continue;
+            }
+
+            foreach (var usageEvent in GetSessionUsageDeltas(file.FullName))
+            {
+                if (usageEvent.Timestamp < startUtc || usageEvent.Timestamp >= endUtc)
+                {
+                    continue;
+                }
+
+                var localDate = usageEvent.Timestamp.ToLocalTime().Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                if (!buckets.TryGetValue(localDate, out var bucket))
+                {
+                    continue;
+                }
+
+                AddDailyTokenMetrics(bucket, usageEvent.Metrics);
+            }
+        }
+
+        return buckets.Values.OrderBy(row => row.Date, StringComparer.Ordinal).ToList();
+    }
+
+    List<RateLimitTokenUsageRow> GetRateLimitTokenUsageRows(IReadOnlyList<RateLimitRow> rateLimitRows, int limit)
+    {
+        var nowUtc = DateTime.UtcNow;
+        var specs = new List<(RateLimitRow RateRow, double UsedPercent, DateTime WindowStartUtc, DateTime WindowEndUtc, double Minutes, string Confidence, TokenBucket Bucket)>();
+
+        foreach (var rateRow in rateLimitRows)
+        {
+            if (rateRow.Window is not ("5 hour" or "1 week"))
+            {
+                continue;
+            }
+
+            var minutes = rateRow.WindowMinutes ?? (rateRow.Window == "5 hour" ? 300.0 : 10080.0);
+            if (minutes <= 0)
+            {
+                continue;
+            }
+
+            var windowEndUtc = nowUtc;
+            var confidence = "Duration fallback local estimate";
+            if (rateRow.ResetsAt is not null)
+            {
+                windowEndUtc = rateRow.ResetsAt.Value.ToUniversalTime();
+                confidence = "Reset-aligned local estimate";
+            }
+
+            var windowStartUtc = windowEndUtc.AddMinutes(-minutes);
+            specs.Add((rateRow, rateRow.RawUsedPercent ?? rateRow.UsedPercent, windowStartUtc, windowEndUtc, minutes, confidence, NewTokenBucket(rateRow.Window)));
+        }
+
+        if (specs.Count == 0)
+        {
+            return [];
+        }
+
+        var oldestStartUtc = specs.Min(spec => spec.WindowStartUtc);
+        var newestEndUtc = specs.Max(spec => spec.WindowEndUtc);
+        foreach (var file in GetSessionFiles(limit))
+        {
+            if (file.LastWriteTimeUtc < oldestStartUtc)
+            {
+                break;
+            }
+
+            foreach (var usageEvent in GetSessionUsageDeltas(file.FullName))
+            {
+                if (usageEvent.Timestamp < oldestStartUtc || usageEvent.Timestamp >= newestEndUtc)
+                {
+                    continue;
+                }
+
+                foreach (var spec in specs)
+                {
+                    if (usageEvent.Timestamp < spec.WindowStartUtc || usageEvent.Timestamp >= spec.WindowEndUtc)
+                    {
+                        continue;
+                    }
+
+                    AddTokenMetrics(spec.Bucket, usageEvent.Metrics);
+                }
+            }
+        }
+
+        var rows = new List<RateLimitTokenUsageRow>();
+        foreach (var spec in specs)
+        {
+            double? tokensPerPercent = null;
+            double? impliedFullWindowTokens = null;
+            string? notes = null;
+            if (spec.UsedPercent > 0 && spec.Bucket.Total > 0)
+            {
+                tokensPerPercent = Math.Round(spec.Bucket.Total / spec.UsedPercent, 0);
+                impliedFullWindowTokens = Math.Round((spec.Bucket.Total / spec.UsedPercent) * 100.0, 0);
+            }
+            else if (spec.UsedPercent <= 0 && spec.Bucket.Total > 0)
+            {
+                notes = "Waiting for non-zero used %";
+            }
+
+            rows.Add(new RateLimitTokenUsageRow
+            {
+                Window = spec.RateRow.Window,
+                UsedPercent = Math.Round(spec.UsedPercent, 2),
+                TotalTokens = spec.Bucket.Total,
+                InputTokens = spec.Bucket.Input,
+                CachedInputTokens = spec.Bucket.CachedInput,
+                OutputTokens = spec.Bucket.Output,
+                ReasoningTokens = spec.Bucket.Reasoning,
+                Events = spec.Bucket.Events,
+                TokensPerPercent = tokensPerPercent,
+                ImpliedFullWindowTokens = impliedFullWindowTokens,
+                WindowStart = spec.WindowStartUtc.ToLocalTime(),
+                WindowEnd = spec.WindowEndUtc.ToLocalTime(),
+                WindowMinutes = spec.Minutes,
+                Confidence = spec.Confidence,
+                Notes = notes
+            });
+        }
+
+        return rows;
     }
 
     List<TokenBucket> GetTokenUsageByModel(int limit, int tail, string[] windowNames)
@@ -1427,6 +1594,16 @@ sealed class UsageMonitor
         bucket.Events++;
     }
 
+    static void AddDailyTokenMetrics(DailyTokenUsageRow bucket, UsageMetrics metrics)
+    {
+        bucket.Total += metrics.Total;
+        bucket.Input += metrics.Input;
+        bucket.CachedInput += metrics.CachedInput;
+        bucket.Output += metrics.Output;
+        bucket.Reasoning += metrics.Reasoning;
+        bucket.Events++;
+    }
+
     void SetEstimatedCost(TokenBucket bucket)
     {
         if (string.IsNullOrWhiteSpace(bucket.Model))
@@ -1845,7 +2022,14 @@ sealed class UsageMonitor
             session = row.Session,
             source_file = row.SourceFile
         }, JsonTools.JsonOptions));
-        File.WriteAllLines(path, lines, Encoding.UTF8);
+        try
+        {
+            File.WriteAllLines(path, lines, Encoding.UTF8);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"Unable to save rate-limit history to {path}: {ex.Message}");
+        }
     }
 
     void WriteRateLimitHistorySamples(Snapshot snapshot)
@@ -2930,8 +3114,10 @@ sealed class DashboardServer
         var fileName = path switch
         {
             "/" or "/index.html" => "index.html",
+            "/daily.html" => "daily.html",
             "/styles.css" => "styles.css",
             "/app.js" => "app.js",
+            "/daily.js" => "daily.js",
             _ => null
         };
         if (fileName is null)
@@ -3052,10 +3238,11 @@ static class ConsoleRenderer
         Console.WriteLine($"Source    : {snapshot.SourceFile}");
         Console.WriteLine();
         PrintRows("Rate limits", snapshot.RateLimitRows.Select(r => $"{r.Window,-10} used {r.UsedPercent,6:N2}% remaining {r.RemainingPercent,6:N2}% resets {UsageMonitor.FormatDisplayDateTime(r.ResetsAt) ?? ""}"));
+        PrintRows("1% token usage tracker", snapshot.RateLimitTokenUsageRows.Select(r => $"{r.Window,-10} used {r.UsedPercent,6:N2}% total {r.TotalTokens,12:N0} tokensPer1Percent {r.TokensPerPercent?.ToString("N0", CultureInfo.InvariantCulture) ?? ""} implied100Percent {r.ImpliedFullWindowTokens?.ToString("N0", CultureInfo.InvariantCulture) ?? ""} events {r.Events,5:N0}"));
         PrintRows("Rolling token usage, local estimate", snapshot.RollingTokenRows.Select(r => $"{r.Window,-13} total {r.Total,12:N0} input {r.Input,12:N0} cached {r.CachedInput,12:N0} output {r.Output,12:N0} reasoning {r.Reasoning,12:N0} events {r.Events,5:N0}"));
         PrintRows("Estimated token cost by model, local estimate", snapshot.ModelTokenRows.Select(r => $"{r.Window,-13} {r.Model,-16} {r.PricingBand,-5} total {r.Total,12:N0} input {r.Input,12:N0} output {r.Output,12:N0} cost {r.EstimatedCost?.ToString("N4", CultureInfo.InvariantCulture) ?? ""} {r.CostUnit ?? ""}"));
         PrintRows("API no-compaction scenario by model", snapshot.NoCompactionModelTokenRows.Select(r => $"{r.Window,-13} {r.Model,-16} {r.PricingBand,-5} total {r.Total,12:N0} input {r.Input,12:N0} output {r.Output,12:N0} cost {r.EstimatedCost?.ToString("N4", CultureInfo.InvariantCulture) ?? ""} {r.CostUnit ?? ""}"));
-        PrintRows("Conversation token usage", snapshot.TokenRows.Select(r => $"{r.Scope,-20} total {r.Total,12:N0} input {r.Input,12:N0} cached {r.CachedInput,12:N0} output {r.Output,12:N0} reasoning {r.Reasoning,12:N0}"));
+        PrintRows("Conversation token usage", snapshot.TokenRows.Select(r => $"{r.Scope,-20} total {r.Total,12:N0} input {r.Input,12:N0} cached {r.CachedInput,12:N0} cacheHit {r.CacheHitRatioPercent?.ToString("N2", CultureInfo.InvariantCulture) ?? "",6}% output {r.Output,12:N0} reasoning {r.Reasoning,12:N0}"));
         if (snapshot.ContextWindow is not null)
         {
             Console.WriteLine($"Model context window: {snapshot.ContextWindow} tokens");
@@ -3169,11 +3356,13 @@ static class SnapshotJson
             snapshot.PricingSource,
             snapshot.RegionalUpliftApplied,
             RateLimitRows = snapshot.RateLimitRows.Select(r => new { r.Window, r.UsedPercent, r.RemainingPercent, r.WindowMinutes, ResetsAt = UsageMonitor.FormatDisplayDateTime(r.ResetsAt) }).ToList(),
+            RateLimitTokenUsageRows = snapshot.RateLimitTokenUsageRows.Select(r => new { r.Window, r.UsedPercent, r.TotalTokens, r.InputTokens, r.CachedInputTokens, r.OutputTokens, r.ReasoningTokens, r.Events, r.TokensPerPercent, r.ImpliedFullWindowTokens, WindowStart = UsageMonitor.FormatDisplayDateTime(r.WindowStart), WindowEnd = UsageMonitor.FormatDisplayDateTime(r.WindowEnd), r.WindowMinutes, r.Confidence, r.Notes }).ToList(),
             RateLimitHistoryRows = snapshot.RateLimitHistoryRows.Select(r => new { SampledAt = UsageMonitor.FormatLocalDateTime(r.SampledAt), r.EventTimestamp, r.PlanType, r.Window, r.UsedPercent, r.RemainingPercent, r.WindowMinutes, r.ResetsAt, r.Session, r.SourceFile }).DistinctBy(r => $"{r.SampledAt}|{r.Window}|{Math.Round(r.UsedPercent, 2)}|{Math.Round(r.RemainingPercent, 2)}|{r.ResetsAt}").ToList(),
             RateLimitHistorySummaryRows = snapshot.RateLimitHistorySummaryRows.Select(r => new { r.Window, r.LatestUsedPercent, r.PeakUsedPercent, r.AverageUsedPercent, r.Samples, r.ResetCount, FirstSampledAt = UsageMonitor.FormatLocalDateTime(r.FirstSampledAt), LastSampledAt = UsageMonitor.FormatLocalDateTime(r.LastSampledAt) }).ToList(),
             snapshot.RateLimitHistoryDays,
             snapshot.RateLimitHistorySampleSeconds,
             RollingTokenRows = snapshot.RollingTokenRows.Select(CopyTokenBucket).ToList(),
+            DailyTokenUsageRows = snapshot.DailyTokenUsageRows.Select(CopyDailyTokenUsageRow).ToList(),
             ModelTokenRows = snapshot.ModelTokenRows.Select(CopyTokenBucket).ToList(),
             NoCompactionModelTokenRows = snapshot.NoCompactionModelTokenRows.Select(CopyTokenBucket).ToList(),
             ModelTokenPeriodRows = snapshot.ModelTokenPeriodRows.Select(CopyTokenBucket).ToList(),
@@ -3203,6 +3392,7 @@ static class SnapshotJson
                     turn.Total,
                     turn.Input,
                     turn.CachedInput,
+                    turn.CacheHitRatioPercent,
                     turn.NonCachedInput,
                     turn.Output,
                     turn.Reasoning,
@@ -3224,6 +3414,7 @@ static class SnapshotJson
                     turn.Total,
                     turn.Input,
                     turn.CachedInput,
+                    turn.CacheHitRatioPercent,
                     turn.NonCachedInput,
                     turn.Output,
                     turn.Reasoning,
@@ -3250,9 +3441,22 @@ static class SnapshotJson
         row.Total,
         row.Input,
         row.CachedInput,
+        row.CacheHitRatioPercent,
         NonCachedInput = Math.Max(0, (row.Input ?? 0) - (row.CachedInput ?? 0)),
         row.Output,
         row.Reasoning
+    };
+
+    static object CopyDailyTokenUsageRow(DailyTokenUsageRow row) => new
+    {
+        row.Date,
+        row.Total,
+        row.Input,
+        row.CachedInput,
+        NonCachedInput = Math.Max(0, row.Input - row.CachedInput),
+        row.Output,
+        row.Reasoning,
+        row.Events
     };
 
     static object CopyTokenBucket(TokenBucket row) => new
@@ -3401,7 +3605,9 @@ sealed class Snapshot
     public string? Session { get; set; }
     public string? PlanType { get; set; }
     public List<RateLimitRow> RateLimitRows { get; set; } = [];
+    public List<RateLimitTokenUsageRow> RateLimitTokenUsageRows { get; set; } = [];
     public List<TokenBucket> RollingTokenRows { get; set; } = [];
+    public List<DailyTokenUsageRow> DailyTokenUsageRows { get; set; } = [];
     public List<TokenBucket> ModelTokenRows { get; set; } = [];
     public List<TokenBucket> NoCompactionModelTokenRows { get; set; } = [];
     public List<TokenBucket> ModelTokenPeriodRows { get; set; } = [];
@@ -3426,9 +3632,29 @@ sealed class RateLimitRow
 {
     public string? Window { get; set; }
     public double UsedPercent { get; set; }
+    public double? RawUsedPercent { get; set; }
     public double RemainingPercent { get; set; }
     public double? WindowMinutes { get; set; }
     public DateTime? ResetsAt { get; set; }
+}
+
+sealed class RateLimitTokenUsageRow
+{
+    public string? Window { get; set; }
+    public double UsedPercent { get; set; }
+    public long TotalTokens { get; set; }
+    public long InputTokens { get; set; }
+    public long CachedInputTokens { get; set; }
+    public long OutputTokens { get; set; }
+    public long ReasoningTokens { get; set; }
+    public int Events { get; set; }
+    public double? TokensPerPercent { get; set; }
+    public double? ImpliedFullWindowTokens { get; set; }
+    public DateTime WindowStart { get; set; }
+    public DateTime WindowEnd { get; set; }
+    public double WindowMinutes { get; set; }
+    public string? Confidence { get; set; }
+    public string? Notes { get; set; }
 }
 
 sealed class TokenUsageRow
@@ -3437,8 +3663,20 @@ sealed class TokenUsageRow
     public long? Total { get; set; }
     public long? Input { get; set; }
     public long? CachedInput { get; set; }
+    public double? CacheHitRatioPercent { get; set; }
     public long? Output { get; set; }
     public long? Reasoning { get; set; }
+}
+
+sealed class DailyTokenUsageRow
+{
+    public string Date { get; set; } = "";
+    public long Total { get; set; }
+    public long Input { get; set; }
+    public long CachedInput { get; set; }
+    public long Output { get; set; }
+    public long Reasoning { get; set; }
+    public int Events { get; set; }
 }
 
 sealed class TokenBucket : ICostRow
@@ -3479,6 +3717,7 @@ sealed class TurnTokenRow : ICostRow
     public long Total { get; set; }
     public long Input { get; set; }
     public long CachedInput { get; set; }
+    public double? CacheHitRatioPercent { get; set; }
     public long NonCachedInput { get; set; }
     public long Output { get; set; }
     public long Reasoning { get; set; }
@@ -3499,6 +3738,7 @@ sealed class NoCompactionTurnTokenRow : ICostRow
     public long Total { get; set; }
     public long Input { get; set; }
     public long CachedInput { get; set; }
+    public double? CacheHitRatioPercent { get; set; }
     public long NonCachedInput { get; set; }
     public long Output { get; set; }
     public long Reasoning { get; set; }

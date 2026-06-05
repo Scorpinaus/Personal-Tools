@@ -179,6 +179,60 @@
       font-weight: 650;
       background: #fbfaf8;
     }
+    .rate-limit-list {
+      display: grid;
+      gap: 10px;
+    }
+    .rate-limit-row {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: #fbfaf8;
+      min-width: 0;
+    }
+    .rate-limit-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+      font-size: 13px;
+    }
+    .rate-limit-top span {
+      color: var(--accent);
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .rate-limit-bar {
+      height: 8px;
+      margin: 8px 0;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e7e1d7;
+    }
+    .rate-limit-bar span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+    }
+    .rate-limit-meta {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .rate-limit-meta span,
+    .rate-limit-meta strong {
+      min-width: 0;
+    }
+    .rate-limit-meta strong {
+      display: block;
+      color: var(--ink);
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
     .total {
       display: flex;
       gap: 14px;
@@ -349,4 +403,5 @@
       section { overflow-x: auto; }
       .collapsible-section { overflow-x: hidden; }
       .section-body { overflow-x: auto; }
+      .rate-limit-meta { grid-template-columns: 1fr; }
     }

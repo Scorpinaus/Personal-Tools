@@ -179,12 +179,27 @@ function Convert-SnapshotForJson {
         }
     }
 
+    function Get-CacheHitRatioPercent {
+        param(
+            [long]$InputTokens,
+            [long]$CachedInputTokens
+        )
+
+        if ($InputTokens -le 0) {
+            return $null
+        }
+
+        $boundedCachedInput = [Math]::Min($InputTokens, [Math]::Max(0L, $CachedInputTokens))
+        return [Math]::Round(([double]$boundedCachedInput / [double]$InputTokens) * 100.0, 2)
+    }
+
     function Copy-RowWithInputBreakdown {
         param(
             [object[]]$Rows,
             [string]$InputProperty = "Input",
             [string]$CachedInputProperty = "CachedInput",
-            [string]$NonCachedInputProperty = "NonCachedInput"
+            [string]$NonCachedInputProperty = "NonCachedInput",
+            [string]$CacheHitRatioProperty = "CacheHitRatioPercent"
         )
 
         @(
@@ -195,18 +210,29 @@ function Convert-SnapshotForJson {
 
                 $copy = [ordered]@{}
                 foreach ($prop in $row.PSObject.Properties) {
-                    if ($prop.Name -eq $NonCachedInputProperty) {
+                    if ($prop.Name -eq $NonCachedInputProperty -or $prop.Name -eq $CacheHitRatioProperty) {
                         continue
                     }
 
                     $copy[$prop.Name] = $prop.Value
                     if ($prop.Name -eq $CachedInputProperty -and -not $copy.Contains($NonCachedInputProperty)) {
-                        $copy[$NonCachedInputProperty] = [Math]::Max(0L, (Get-LongPropertyValue $row $InputProperty) - (Get-LongPropertyValue $row $CachedInputProperty))
+                        $inputValue = Get-LongPropertyValue $row $InputProperty
+                        $cachedInputValue = Get-LongPropertyValue $row $CachedInputProperty
+                        $copy[$NonCachedInputProperty] = [Math]::Max(0L, $inputValue - $cachedInputValue)
+                        $copy[$CacheHitRatioProperty] = Get-CacheHitRatioPercent -InputTokens $inputValue -CachedInputTokens $cachedInputValue
                     }
                 }
 
                 if (-not $copy.Contains($NonCachedInputProperty)) {
-                    $copy[$NonCachedInputProperty] = [Math]::Max(0L, (Get-LongPropertyValue $row $InputProperty) - (Get-LongPropertyValue $row $CachedInputProperty))
+                    $inputValue = Get-LongPropertyValue $row $InputProperty
+                    $cachedInputValue = Get-LongPropertyValue $row $CachedInputProperty
+                    $copy[$NonCachedInputProperty] = [Math]::Max(0L, $inputValue - $cachedInputValue)
+                }
+
+                if (-not $copy.Contains($CacheHitRatioProperty)) {
+                    $inputValue = Get-LongPropertyValue $row $InputProperty
+                    $cachedInputValue = Get-LongPropertyValue $row $CachedInputProperty
+                    $copy[$CacheHitRatioProperty] = Get-CacheHitRatioPercent -InputTokens $inputValue -CachedInputTokens $cachedInputValue
                 }
 
                 [pscustomobject]$copy
@@ -354,6 +380,30 @@ function Convert-SnapshotForJson {
         }
     )
 
+    $rateLimitTokenUsageRows = @(
+        if ($Snapshot.PSObject.Properties["RateLimitTokenUsageRows"]) {
+            foreach ($row in $Snapshot.RateLimitTokenUsageRows) {
+                [pscustomobject]@{
+                    Window = $row.Window
+                    UsedPercent = $row.UsedPercent
+                    TotalTokens = $row.TotalTokens
+                    InputTokens = $row.InputTokens
+                    CachedInputTokens = $row.CachedInputTokens
+                    OutputTokens = $row.OutputTokens
+                    ReasoningTokens = $row.ReasoningTokens
+                    Events = $row.Events
+                    TokensPerPercent = $row.TokensPerPercent
+                    ImpliedFullWindowTokens = $row.ImpliedFullWindowTokens
+                    WindowStart = Format-DisplayDateTime $row.WindowStart
+                    WindowEnd = Format-DisplayDateTime $row.WindowEnd
+                    WindowMinutes = $row.WindowMinutes
+                    Confidence = $row.Confidence
+                    Notes = $row.Notes
+                }
+            }
+        }
+    )
+
     $conversationOverviewRows = @(
         if ($Snapshot.PSObject.Properties["ConversationOverviewRows"]) {
             foreach ($row in $Snapshot.ConversationOverviewRows) {
@@ -399,9 +449,11 @@ function Convert-SnapshotForJson {
         RateLimitRows = $rateLimitRows
         RateLimitHistoryRows = $rateLimitHistoryRows
         RateLimitHistorySummaryRows = $rateLimitHistorySummaryRows
+        RateLimitTokenUsageRows = $rateLimitTokenUsageRows
         RateLimitHistoryDays = if ($Snapshot.PSObject.Properties["RateLimitHistoryDays"]) { $Snapshot.RateLimitHistoryDays } else { $RateLimitHistoryDays }
         RateLimitHistorySampleSeconds = if ($Snapshot.PSObject.Properties["RateLimitHistorySampleSeconds"]) { $Snapshot.RateLimitHistorySampleSeconds } else { $RateLimitHistorySampleSeconds }
         RollingTokenRows = Copy-RowWithInputBreakdown @($Snapshot.RollingTokenRows)
+        DailyTokenUsageRows = Copy-RowWithInputBreakdown @($Snapshot.DailyTokenUsageRows)
         ModelTokenRows = Copy-RowWithInputBreakdown @($Snapshot.ModelTokenRows)
         NoCompactionModelTokenRows = Copy-RowWithInputBreakdown @($Snapshot.NoCompactionModelTokenRows)
         ModelTokenPeriodRows = Copy-RowWithInputBreakdown @($Snapshot.ModelTokenPeriodRows)
@@ -584,6 +636,12 @@ function Get-DashboardAsset {
                 ContentType = "text/html; charset=utf-8"
             }
         }
+        "/daily.html" {
+            return [pscustomobject]@{
+                File = Join-Path $DashboardRoot "daily.html"
+                ContentType = "text/html; charset=utf-8"
+            }
+        }
         "/styles.css" {
             return [pscustomobject]@{
                 File = Join-Path $DashboardRoot "styles.css"
@@ -593,6 +651,12 @@ function Get-DashboardAsset {
         "/app.js" {
             return [pscustomobject]@{
                 File = Join-Path $DashboardRoot "app.js"
+                ContentType = "application/javascript; charset=utf-8"
+            }
+        }
+        "/daily.js" {
+            return [pscustomobject]@{
+                File = Join-Path $DashboardRoot "daily.js"
                 ContentType = "application/javascript; charset=utf-8"
             }
         }

@@ -38,6 +38,7 @@ $script:CostWindowCache = @{}
 $script:NoCompactionCostWindowCache = @{}
 $script:CostPeriodCache = @{}
 $script:NoCompactionCostPeriodCache = @{}
+$script:UsageDeltasCache = @{}
 
 function Get-PropValue {
     param(
@@ -109,6 +110,7 @@ function Convert-Window {
     [pscustomobject]@{
         Window = $Name
         UsedPercent = [Math]::Round($used, 2)
+        RawUsedPercent = $used
         RemainingPercent = [Math]::Round($remaining, 2)
         WindowMinutes = $minutes
         ResetsAt = Convert-ResetTime $resetEpoch
@@ -151,11 +153,17 @@ function Convert-TokenUsage {
         return $null
     }
 
+    $inputValue = Get-PropValue $Usage @("input_tokens", "inputTokens")
+    $cachedInputValue = Get-PropValue $Usage @("cached_input_tokens", "cachedInputTokens")
+    $inputTokens = Get-UsageMetric $Usage @("input_tokens", "inputTokens")
+    $cachedInputTokens = Get-UsageMetric $Usage @("cached_input_tokens", "cachedInputTokens")
+
     [pscustomobject]@{
         Scope = $Label
         Total = Get-PropValue $Usage @("total_tokens", "totalTokens")
-        Input = Get-PropValue $Usage @("input_tokens", "inputTokens")
-        CachedInput = Get-PropValue $Usage @("cached_input_tokens", "cachedInputTokens")
+        Input = $inputValue
+        CachedInput = $cachedInputValue
+        CacheHitRatioPercent = Get-CacheHitRatioPercent -InputTokens $inputTokens -CachedInputTokens $cachedInputTokens
         Output = Get-PropValue $Usage @("output_tokens", "outputTokens")
         Reasoning = Get-PropValue $Usage @("reasoning_output_tokens", "reasoningOutputTokens")
     }
@@ -178,6 +186,20 @@ function Get-UsageMetric {
     }
 
     return 0L
+}
+
+function Get-CacheHitRatioPercent {
+    param(
+        [long]$InputTokens,
+        [long]$CachedInputTokens
+    )
+
+    if ($InputTokens -le 0) {
+        return $null
+    }
+
+    $boundedCachedInput = [Math]::Min($InputTokens, [Math]::Max(0L, $CachedInputTokens))
+    return [Math]::Round(([double]$boundedCachedInput / [double]$InputTokens) * 100.0, 2)
 }
 
 function Convert-UsageToMetrics {
@@ -463,6 +485,22 @@ function Get-SessionUsageDeltas {
         [int]$Tail
     )
 
+    $fileInfo = $null
+    $cacheKey = $Path
+    try {
+        $fileInfo = Get-Item -LiteralPath $Path -ErrorAction Stop
+        $cacheKey = $fileInfo.FullName
+        $cached = $script:UsageDeltasCache[$cacheKey]
+        if ($null -ne $cached -and
+            $cached.Length -eq $fileInfo.Length -and
+            $cached.LastWriteTimeUtc -eq $fileInfo.LastWriteTimeUtc) {
+            return @($cached.Rows)
+        }
+    }
+    catch {
+        $fileInfo = $null
+    }
+
     $currentModel = Get-SessionInitialModel $Path
     $previousTotal = $null
     $seenEvents = [System.Collections.Generic.HashSet[string]]::new()
@@ -527,6 +565,18 @@ function Get-SessionUsageDeltas {
             Source = $delta.Source
             TotalUsage = $currentTotal
             LastUsage = $lastUsage
+        }
+    }
+
+    if ($null -ne $fileInfo) {
+        if ($script:UsageDeltasCache.Count -gt 128) {
+            $script:UsageDeltasCache.Clear()
+        }
+
+        $script:UsageDeltasCache[$cacheKey] = [pscustomobject]@{
+            Length = $fileInfo.Length
+            LastWriteTimeUtc = $fileInfo.LastWriteTimeUtc
+            Rows = @($rows)
         }
     }
 
@@ -1452,7 +1502,12 @@ function Save-RateLimitHistoryRows {
         }
     )
 
-    Set-Content -LiteralPath $path -Value $lines -Encoding UTF8
+    try {
+        Set-Content -LiteralPath $path -Value $lines -Encoding UTF8
+    }
+    catch {
+        Write-Warning ("Unable to save rate-limit history to {0}: {1}" -f $path, $_.Exception.Message)
+    }
 }
 
 function Write-RateLimitHistorySamples {
@@ -1751,6 +1806,177 @@ function Get-RollingTokenUsage {
     }
 
     return @($fiveHour, $week, $month)
+}
+
+function Get-DailyTokenUsageRows {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Limit,
+        [int]$Days = 365
+    )
+
+    $safeDays = [Math]::Max(1, $Days)
+    $todayLocal = (Get-Date).Date
+    $startLocal = $todayLocal.AddDays(-1 * ($safeDays - 1))
+    $endLocal = $todayLocal.AddDays(1)
+    $startUtc = $startLocal.ToUniversalTime()
+    $endUtc = $endLocal.ToUniversalTime()
+    $buckets = [ordered]@{}
+
+    for ($index = 0; $index -lt $safeDays; $index++) {
+        $date = $startLocal.AddDays($index).ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture)
+        $buckets[$date] = [pscustomobject]@{
+            Date = $date
+            Total = 0L
+            Input = 0L
+            CachedInput = 0L
+            Output = 0L
+            Reasoning = 0L
+            Events = 0
+        }
+    }
+
+    foreach ($file in (Get-SessionFiles -Root $Root -Archived:$Archived -Limit $Limit)) {
+        if ($file.LastWriteTimeUtc -lt $startUtc) {
+            continue
+        }
+
+        foreach ($usageEvent in (Get-SessionUsageDeltas -Path $file.FullName -Tail 0)) {
+            $eventTime = $usageEvent.Timestamp
+            if ($null -eq $eventTime -or $eventTime -lt $startUtc -or $eventTime -ge $endUtc) {
+                continue
+            }
+
+            $date = $eventTime.ToLocalTime().Date.ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture)
+            if (-not $buckets.Contains($date)) {
+                continue
+            }
+
+            $bucket = $buckets[$date]
+            $bucket.Total += [long]$usageEvent.Metrics.Total
+            $bucket.Input += [long]$usageEvent.Metrics.Input
+            $bucket.CachedInput += [long]$usageEvent.Metrics.CachedInput
+            $bucket.Output += [long]$usageEvent.Metrics.Output
+            $bucket.Reasoning += [long]$usageEvent.Metrics.Reasoning
+            $bucket.Events += 1
+        }
+    }
+
+    return @($buckets.Values)
+}
+
+function Get-RateLimitTokenUsageRows {
+    param(
+        [string]$Root,
+        [switch]$Archived,
+        [int]$Limit,
+        [object[]]$RateLimitRows
+    )
+
+    $nowUtc = [DateTime]::UtcNow
+    $specs = @()
+
+    foreach ($rateRow in @($RateLimitRows)) {
+        if ($null -eq $rateRow -or $rateRow.Window -notin @("5 hour", "1 week")) {
+            continue
+        }
+
+        $minutes = if ($null -ne $rateRow.WindowMinutes) { [double]$rateRow.WindowMinutes } elseif ($rateRow.Window -eq "5 hour") { 300.0 } else { 10080.0 }
+        if ($minutes -le 0) {
+            continue
+        }
+
+        $windowEndUtc = $nowUtc
+        $confidence = "Duration fallback local estimate"
+        if ($null -ne $rateRow.ResetsAt) {
+            try {
+                $windowEndUtc = ([datetime]$rateRow.ResetsAt).ToUniversalTime()
+                $confidence = "Reset-aligned local estimate"
+            }
+            catch {
+                $windowEndUtc = $nowUtc
+            }
+        }
+
+        $windowStartUtc = $windowEndUtc.AddMinutes(-1 * $minutes)
+
+        $rawUsedProp = $rateRow.PSObject.Properties["RawUsedPercent"]
+        $usedPercent = if ($null -ne $rawUsedProp -and $null -ne $rawUsedProp.Value) { [double]$rawUsedProp.Value } else { [double]$rateRow.UsedPercent }
+        $specs += [pscustomobject]@{
+            RateRow = $rateRow
+            UsedPercent = $usedPercent
+            WindowStartUtc = $windowStartUtc
+            WindowEndUtc = $windowEndUtc
+            WindowMinutes = $minutes
+            Confidence = $confidence
+            Bucket = New-TokenBucket $rateRow.Window
+        }
+    }
+
+    if ($specs.Count -eq 0) {
+        return @()
+    }
+
+    $oldestStartUtc = ($specs | Sort-Object WindowStartUtc | Select-Object -First 1).WindowStartUtc
+    $newestEndUtc = ($specs | Sort-Object WindowEndUtc -Descending | Select-Object -First 1).WindowEndUtc
+
+    foreach ($file in (Get-SessionFiles -Root $Root -Archived:$Archived -Limit $Limit)) {
+        if ($file.LastWriteTimeUtc -lt $oldestStartUtc) {
+            break
+        }
+
+        foreach ($usageEvent in (Get-SessionUsageDeltas -Path $file.FullName -Tail 0)) {
+            $eventTime = $usageEvent.Timestamp
+            if ($eventTime -lt $oldestStartUtc -or $eventTime -ge $newestEndUtc) {
+                continue
+            }
+
+            foreach ($spec in $specs) {
+                if ($eventTime -lt $spec.WindowStartUtc -or $eventTime -ge $spec.WindowEndUtc) {
+                    continue
+                }
+
+                Add-TokenMetrics $spec.Bucket $usageEvent.Metrics
+            }
+        }
+    }
+
+    $rows = @()
+    foreach ($spec in $specs) {
+        $bucket = $spec.Bucket
+        $usedPercent = [double]$spec.UsedPercent
+        $tokensPerPercent = $null
+        $impliedFullWindowTokens = $null
+        $note = $null
+        if ($usedPercent -gt 0 -and $bucket.Total -gt 0) {
+            $tokensPerPercent = [Math]::Round([double]$bucket.Total / $usedPercent, 0)
+            $impliedFullWindowTokens = [Math]::Round(([double]$bucket.Total / $usedPercent) * 100.0, 0)
+        }
+        elseif ($usedPercent -le 0 -and $bucket.Total -gt 0) {
+            $note = "Waiting for non-zero used %"
+        }
+
+        $rows += [pscustomobject]@{
+            Window = $spec.RateRow.Window
+            UsedPercent = [Math]::Round($usedPercent, 2)
+            TotalTokens = $bucket.Total
+            InputTokens = $bucket.Input
+            CachedInputTokens = $bucket.CachedInput
+            OutputTokens = $bucket.Output
+            ReasoningTokens = $bucket.Reasoning
+            Events = $bucket.Events
+            TokensPerPercent = $tokensPerPercent
+            ImpliedFullWindowTokens = $impliedFullWindowTokens
+            WindowStart = $spec.WindowStartUtc.ToLocalTime()
+            WindowEnd = $spec.WindowEndUtc.ToLocalTime()
+            WindowMinutes = $spec.WindowMinutes
+            Confidence = $spec.Confidence
+            Notes = $note
+        }
+    }
+
+    return @($rows)
 }
 
 function Get-TokenUsageByModel {
@@ -2327,6 +2553,7 @@ function Get-ConversationTurnTokenRows {
                 Total = $metrics.Total
                 Input = $metrics.Input
                 CachedInput = $metrics.CachedInput
+                CacheHitRatioPercent = Get-CacheHitRatioPercent -InputTokens ([long]$metrics.Input) -CachedInputTokens ([long]$metrics.CachedInput)
                 NonCachedInput = [Math]::Max(0L, [long]$metrics.Input - [long]$metrics.CachedInput)
                 Output = $metrics.Output
                 Reasoning = $metrics.Reasoning
@@ -2371,6 +2598,7 @@ function Get-NoCompactionTurnTokenRows {
                 Total = $row.Total
                 Input = $row.Input
                 CachedInput = $row.CachedInput
+                CacheHitRatioPercent = Get-CacheHitRatioPercent -InputTokens ([long]$row.Input) -CachedInputTokens ([long]$row.CachedInput)
                 NonCachedInput = $row.NonCachedInput
                 Output = $row.Output
                 Reasoning = $row.Reasoning
@@ -2564,7 +2792,9 @@ function Get-LatestCodexUsageSnapshot {
                 Get-LatestPlanType -Root $Root -Archived:$Archived -Limit $legacyLimit -Tail $legacyTail
             }
             RateLimitRows = @(Convert-RateLimits $rateLimits)
+            RateLimitTokenUsageRows = @()
             RollingTokenRows = @(Get-RollingTokenUsage -Root $Root -Archived:$Archived -Limit $RollingMaxFiles -Tail $RollingTailLines)
+            DailyTokenUsageRows = @(Get-DailyTokenUsageRows -Root $Root -Archived:$Archived -Limit $CostMaxFiles -Days 365)
             ModelTokenRows = $modelRows
             NoCompactionModelTokenRows = $noCompactionModelRows
             ModelTokenPeriodRows = $modelPeriodRows
@@ -2585,6 +2815,8 @@ function Get-LatestCodexUsageSnapshot {
             ContextWindow = if ($null -ne $usageMatch) { $usageMatch.ContextWindow } else { $null }
             ConversationOverviewRows = @(Get-ConversationOverviewRows -Files $overviewFiles)
         }
+
+        $snapshot.RateLimitTokenUsageRows = @(Get-RateLimitTokenUsageRows -Root $Root -Archived:$Archived -Limit $RollingMaxFiles -RateLimitRows $snapshot.RateLimitRows)
 
         Write-RateLimitHistorySamples -Root $Root -Snapshot $snapshot
         $rateLimitHistoryRows = @(Get-RateLimitHistoryRows -Root $Root -Days $RateLimitHistoryDays)
@@ -2628,6 +2860,13 @@ function Show-Snapshot {
             Write-Host ("Rate-limit history, last {0} days" -f $Snapshot.RateLimitHistoryDays)
             $Snapshot.RateLimitHistorySummaryRows |
                 Select-Object Window, LatestUsedPercent, PeakUsedPercent, AverageUsedPercent, Samples, ResetCount, FirstSampledAt, LastSampledAt |
+                Format-Table -AutoSize
+        }
+
+        if ($Snapshot.PSObject.Properties["RateLimitTokenUsageRows"] -and $Snapshot.RateLimitTokenUsageRows.Count -gt 0) {
+            Write-Host "1% token usage tracker"
+            $Snapshot.RateLimitTokenUsageRows |
+                Select-Object Window, UsedPercent, TotalTokens, TokensPerPercent, ImpliedFullWindowTokens, Events, WindowStart, WindowEnd, Confidence |
                 Format-Table -AutoSize
         }
     }
@@ -2705,7 +2944,7 @@ function Show-Snapshot {
     if ($Snapshot.TokenRows.Count -gt 0) {
         Write-Host "Conversation token usage"
         $Snapshot.TokenRows |
-            Select-Object Scope, Total, Input, CachedInput, Output, Reasoning |
+            Select-Object Scope, Total, Input, CachedInput, CacheHitRatioPercent, Output, Reasoning |
             Format-Table -AutoSize
     }
     else {

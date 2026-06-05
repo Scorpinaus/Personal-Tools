@@ -3,11 +3,13 @@
 
     const number = new Intl.NumberFormat();
     const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+    const percent = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const activeTabs = { costs: "modelCosts", modelCostPeriod: "modelCostsOverall", noCompactionCostPeriod: "noCompactionCostsOverall", rateHistory: "historyFiveHour", conversation: "conversationOverview", conversationCostMode: "conversationNormalTurns" };
     const stopMonitorButton = document.getElementById("stopMonitor");
     const turnPageSize = 10;
     let stopped = false;
     let refreshTimer = null;
+    let loading = false;
     let conversationRows = [];
     let selectedConversationKey = null;
     let selectedConversationPage = 1;
@@ -27,15 +29,38 @@
       return value === null || value === undefined || value === "" ? "" : money.format(value);
     }
 
+    function fmtPercent(value) {
+      if (value === null || value === undefined || value === "") return "";
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? `${percent.format(numeric)}%` : esc(value);
+    }
+
     function asArray(value) {
       if (!value) return [];
       return Array.isArray(value) ? value : [value];
+    }
+
+    function cacheHitRatioPercent(row, inputKey = "Input", cachedInputKey = "CachedInput") {
+      const input = Number(row?.[inputKey] || 0);
+      const cachedInput = Number(row?.[cachedInputKey] || 0);
+      if (!Number.isFinite(input) || input <= 0) return null;
+      const boundedCachedInput = Math.min(input, Math.max(0, Number.isFinite(cachedInput) ? cachedInput : 0));
+      return Math.round((boundedCachedInput / input) * 10000) / 100;
+    }
+
+    function withCacheHitRatio(row, inputKey = "Input", cachedInputKey = "CachedInput") {
+      const copy = { ...(row || {}) };
+      if (copy.CacheHitRatioPercent === null || copy.CacheHitRatioPercent === undefined || copy.CacheHitRatioPercent === "") {
+        copy.CacheHitRatioPercent = cacheHitRatioPercent(copy, inputKey, cachedInputKey);
+      }
+      return copy;
     }
 
     function normalizeUsageData(data) {
       const normalized = { ...(data || {}) };
       [
         "RateLimitRows",
+        "RateLimitTokenUsageRows",
         "RateLimitHistoryRows",
         "RateLimitHistorySummaryRows",
         "RollingTokenRows",
@@ -56,9 +81,9 @@
 
       normalized.ConversationOverviewRows = asArray(normalized.ConversationOverviewRows).map((row) => ({
         ...(row || {}),
-        TokenRows: asArray(row?.TokenRows),
-        TurnTokenRows: asArray(row?.TurnTokenRows),
-        NoCompactionTurnRows: asArray(row?.NoCompactionTurnRows)
+        TokenRows: asArray(row?.TokenRows).map((item) => withCacheHitRatio(item)),
+        TurnTokenRows: asArray(row?.TurnTokenRows).map((item) => withCacheHitRatio(item)),
+        NoCompactionTurnRows: asArray(row?.NoCompactionTurnRows).map((item) => withCacheHitRatio(item))
       }));
 
       return normalized;
@@ -79,10 +104,40 @@
       const head = `<tr>${columns.map((col) => `<th>${esc(col.label)}</th>`).join("")}</tr>`;
       const body = safeRows.map((row) => `<tr>${columns.map((col) => {
         const raw = row[col.key];
-        const value = col.date ? esc(fmtDate(raw)) : col.money ? fmtMoney(raw) : col.number ? fmt(raw) : esc(raw);
+        const value = col.date ? esc(fmtDate(raw)) : col.money ? fmtMoney(raw) : col.percent ? fmtPercent(raw) : col.number ? fmt(raw) : esc(raw);
         return `<td>${value}</td>`;
       }).join("")}</tr>`).join("");
       return `<div class="table-scroll"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+    }
+
+    function clampPercent(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return 0;
+      return Math.max(0, Math.min(100, numeric));
+    }
+
+    function renderRateLimits(rows) {
+      const safeRows = asArray(rows);
+      if (safeRows.length === 0) return `<p class="muted">No data yet.</p>`;
+
+      return `<div class="rate-limit-list">${safeRows.map((row) => {
+        const used = Number(row.UsedPercent);
+        const remaining = Number(row.RemainingPercent);
+        const usedWidth = clampPercent(used);
+        return `
+          <div class="rate-limit-row">
+            <div class="rate-limit-top">
+              <strong>${esc(row.Window)}</strong>
+              <span>${fmtPercent(used)} used</span>
+            </div>
+            <div class="rate-limit-bar" aria-hidden="true"><span style="width: ${usedWidth}%"></span></div>
+            <div class="rate-limit-meta">
+              <span>Remaining <strong>${fmtPercent(remaining)}</strong></span>
+              <span>Window <strong>${fmt(row.WindowMinutes)} min</strong></span>
+              <span>Resets <strong>${esc(fmtDate(row.ResetsAt))}</strong></span>
+            </div>
+          </div>`;
+      }).join("")}</div>`;
     }
 
     function parseTime(value) {
@@ -309,7 +364,7 @@
       ]);
     }
 
-    function renderRateLimitHistory(rows, summary, days) {
+    function renderRateLimitHistory(rows, summary, days, tokenUsageRows) {
       const sorted = [...(rows || [])].sort((left, right) => {
         const leftTime = parseTime(left.SampledAt)?.getTime() || 0;
         const rightTime = parseTime(right.SampledAt)?.getTime() || 0;
@@ -328,7 +383,7 @@
 
       const historyTab = activeTabs.rateHistory || "historyFiveHour";
 
-      return chartHtml + table(summaryRows, [
+      return renderRateLimitTokenUsageTracker(tokenUsageRows) + chartHtml + table(summaryRows, [
         { key: "Window", label: "Window" },
         { key: "LatestUsedPercent", label: "Latest used %", number: true },
         { key: "PeakUsedPercent", label: "Peak used %", number: true },
@@ -357,6 +412,33 @@
         { key: "ResetsAt", label: "Resets at", date: true }
       ]) + `</div>
       <p class="source">Showing observed rate-limit samples from the last ${esc(days || 7)} days. Samples are captured while this monitor is running.</p>`;
+    }
+
+    function renderRateLimitTokenUsageTracker(rows) {
+      const safeRows = asArray(rows);
+      const columns = [
+        { key: "UsedPercent", label: "Used %", number: true },
+        { key: "TotalTokens", label: "Total tokens", number: true },
+        { key: "TokensPerPercent", label: "Tokens / 1%", number: true },
+        { key: "ImpliedFullWindowTokens", label: "Implied 100%", number: true },
+        { key: "Events", label: "Events", number: true },
+        { key: "WindowStart", label: "Window start", date: true },
+        { key: "WindowEnd", label: "Resets at", date: true },
+        { key: "Confidence", label: "Basis" },
+        { key: "Notes", label: "Notes" }
+      ];
+      const renderWindow = (windowName, title) => {
+        const windowRows = safeRows.filter((row) => row.Window === windowName);
+        return `<div><h4>${esc(title)}</h4>${table(windowRows, columns)}</div>`;
+      };
+
+      return `
+        <h3>1% Token Usage Tracker</h3>
+        <div class="chart-grid">
+          ${renderWindow("5 hour", "5 hour")}
+          ${renderWindow("1 week", "1 week")}
+        </div>
+      `;
     }
 
     function renderPeriodTotals(rows, usdToSgdRate) {
@@ -598,8 +680,9 @@
         { key: "Timestamp", label: "Timestamp", date: true },
         { key: "Model", label: "Model" },
         { key: "Input", label: "Total input", number: true },
-        { key: "NonCachedInput", label: "Non-cached input", number: true },
         { key: "CachedInput", label: "Cached input", number: true },
+        { key: "CacheHitRatioPercent", label: "Cache hit %", percent: true },
+        { key: "NonCachedInput", label: "Non-cached input", number: true },
         { key: "Output", label: "Output", number: true },
         { key: "Reasoning", label: "Reasoning", number: true },
         costColumn
@@ -642,8 +725,9 @@
           { key: "PricingBand", label: "Pricing band" },
           { key: "CumulativeInput", label: "Cumulative input", number: true },
           { key: "Input", label: "Turn input", number: true },
-          { key: "NonCachedInput", label: "Non-cached input", number: true },
           { key: "CachedInput", label: "Cached input", number: true },
+          { key: "CacheHitRatioPercent", label: "Cache hit %", percent: true },
+          { key: "NonCachedInput", label: "Non-cached input", number: true },
           { key: "Output", label: "Output", number: true },
           { key: "EstimatedCostUsd", label: "Cost USD", money: true },
           { key: "EstimatedCostSgd", label: "Cost SGD", money: true }
@@ -685,6 +769,7 @@
         { key: "Total", label: "Total", number: true },
         { key: "Input", label: "Total input", number: true },
         { key: "CachedInput", label: "Cached input", number: true },
+        { key: "CacheHitRatioPercent", label: "Cache hit %", percent: true },
         { key: "NonCachedInput", label: "Non-cached input", number: true },
         { key: "Output", label: "Output", number: true },
         { key: "Reasoning", label: "Reasoning", number: true }
@@ -793,7 +878,8 @@
     });
 
     async function load() {
-      if (stopped) return;
+      if (stopped || loading) return;
+      loading = true;
       const error = document.getElementById("error");
       try {
         const res = await fetch("/api/usage", { cache: "no-store" });
@@ -807,13 +893,7 @@
         document.getElementById("costAssumptions").textContent =
           `Cost basis: ${data.CostBasis || "API-equivalent estimate"} | Pricing mode: ${data.PricingMode || "Standard"} | Pricing source: ${data.PricingSource || ""} | SGD conversion: ${data.CostBasisMode === "CodexCredits" ? "not applied to credits" : `1 USD = ${data.UsdToSgdRate}`}`;
 
-        document.getElementById("rateLimits").innerHTML = table(data.RateLimitRows, [
-          { key: "Window", label: "Window" },
-          { key: "UsedPercent", label: "Used %", number: true },
-          { key: "RemainingPercent", label: "Remaining %", number: true },
-          { key: "WindowMinutes", label: "Minutes", number: true },
-          { key: "ResetsAt", label: "Resets at", date: true }
-        ]);
+        document.getElementById("rateLimits").innerHTML = renderRateLimits(data.RateLimitRows);
         document.getElementById("rollingTokens").innerHTML = table(data.RollingTokenRows, [
           { key: "Window", label: "Window" },
           { key: "Total", label: "Total", number: true },
@@ -824,7 +904,7 @@
           { key: "Reasoning", label: "Reasoning", number: true },
           { key: "Events", label: "Events", number: true }
         ]);
-        document.getElementById("rateLimitHistory").innerHTML = renderRateLimitHistory(data.RateLimitHistoryRows, data.RateLimitHistorySummaryRows, data.RateLimitHistoryDays);
+        document.getElementById("rateLimitHistory").innerHTML = renderRateLimitHistory(data.RateLimitHistoryRows, data.RateLimitHistorySummaryRows, data.RateLimitHistoryDays, data.RateLimitTokenUsageRows);
         document.getElementById("modelCosts").innerHTML = renderCosts(data.ModelTokenRows, data.ModelCostTotals, data.UsdToSgdRate, data.ModelTokenPeriodRows, data.ModelPeriodCostTotals);
         document.getElementById("noCompactionCosts").innerHTML = renderNoCompactionCosts(data.NoCompactionModelTokenRows, data.NoCompactionModelCostTotals, data.UsdToSgdRate, data.NoCompactionModelTokenPeriodRows, data.NoCompactionModelPeriodCostTotals);
         document.getElementById("sourceCosts").innerHTML = renderSourceCosts(data.SourceCostRows, data.UsdToSgdRate);
@@ -837,6 +917,8 @@
       } catch (err) {
         error.textContent = `Unable to refresh usage data: ${err.message}`;
         error.style.display = "block";
+      } finally {
+        loading = false;
       }
     }
 
