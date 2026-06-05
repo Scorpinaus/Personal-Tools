@@ -116,11 +116,36 @@
       return Math.max(0, Math.min(100, numeric));
     }
 
-    function renderRateLimits(rows) {
-      const safeRows = asArray(rows);
+    function relativeAge(value) {
+      const date = parseTime(value);
+      if (!date) return "";
+      const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+      if (seconds < 60) return `${seconds}s ago`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 48) return `${hours}h ago`;
+      return `${Math.floor(hours / 24)}d ago`;
+    }
+
+    function renderRateLimitSource(meta) {
+      const sampledAt = meta?.RateLimitEventTimestamp || meta?.EventTimestamp;
+      if (!sampledAt) return "";
+      const sampledDate = parseTime(sampledAt);
+      const ageMinutes = sampledDate ? (Date.now() - sampledDate.getTime()) / 60000 : 0;
+      const staleClass = ageMinutes >= 10 ? " stale" : "";
+      const session = meta?.RateLimitSession || meta?.Session || "";
+      const age = relativeAge(sampledAt);
+      const suffix = session ? ` from ${session}` : "";
+      return `<p class="rate-limit-source${staleClass}">Sampled ${esc(fmtDate(sampledAt))}${age ? ` (${esc(age)})` : ""}${esc(suffix)}</p>`;
+    }
+
+    function renderRateLimits(data) {
+      const safeRows = asArray(Array.isArray(data) ? data : data?.RateLimitRows);
       if (safeRows.length === 0) return `<p class="muted">No data yet.</p>`;
 
-      return `<div class="rate-limit-list">${safeRows.map((row) => {
+      const meta = Array.isArray(data) ? {} : data || {};
+      return `${renderRateLimitSource(meta)}<div class="rate-limit-list">${safeRows.map((row) => {
         const used = Number(row.UsedPercent);
         const remaining = Number(row.RemainingPercent);
         const usedWidth = clampPercent(used);
@@ -893,7 +918,7 @@
         document.getElementById("costAssumptions").textContent =
           `Cost basis: ${data.CostBasis || "API-equivalent estimate"} | Pricing mode: ${data.PricingMode || "Standard"} | Pricing source: ${data.PricingSource || ""} | SGD conversion: ${data.CostBasisMode === "CodexCredits" ? "not applied to credits" : `1 USD = ${data.UsdToSgdRate}`}`;
 
-        document.getElementById("rateLimits").innerHTML = renderRateLimits(data.RateLimitRows);
+        document.getElementById("rateLimits").innerHTML = renderRateLimits(data);
         document.getElementById("rollingTokens").innerHTML = table(data.RollingTokenRows, [
           { key: "Window", label: "Window" },
           { key: "Total", label: "Total", number: true },

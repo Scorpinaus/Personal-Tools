@@ -441,6 +441,9 @@ function Convert-SnapshotForJson {
         PlanType = $Snapshot.PlanType
         Session = $Snapshot.Session
         SourceFile = $Snapshot.SourceFile
+        RateLimitEventTimestamp = if ($Snapshot.PSObject.Properties["RateLimitEventTimestamp"]) { $Snapshot.RateLimitEventTimestamp } else { $null }
+        RateLimitSession = if ($Snapshot.PSObject.Properties["RateLimitSession"]) { $Snapshot.RateLimitSession } else { $null }
+        RateLimitSourceFile = if ($Snapshot.PSObject.Properties["RateLimitSourceFile"]) { $Snapshot.RateLimitSourceFile } else { $null }
         CostBasis = $Snapshot.CostBasis
         CostBasisMode = $Snapshot.CostBasisMode
         PricingMode = $Snapshot.PricingMode

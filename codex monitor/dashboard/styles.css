@@ -216,6 +216,16 @@
       display: grid;
       gap: 10px;
     }
+    .rate-limit-source {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .rate-limit-source.stale {
+      color: #8b5e12;
+    }
     .rate-limit-row {
       border: 1px solid var(--line);
       border-radius: 6px;

@@ -2785,6 +2785,9 @@ function Get-LatestCodexUsageSnapshot {
             Timestamp = Get-PropValue $sourceMatch.Entry @("timestamp")
             SourceFile = $sourceMatch.SourceFile
             Session = $sourceMatch.Session
+            RateLimitEventTimestamp = if ($null -ne $rateLimitMatch) { Get-PropValue $rateLimitMatch.Entry @("timestamp") } else { $null }
+            RateLimitSourceFile = if ($null -ne $rateLimitMatch) { $rateLimitMatch.SourceFile } else { $null }
+            RateLimitSession = if ($null -ne $rateLimitMatch) { $rateLimitMatch.Session } else { $null }
             PlanType = if (Get-PropValue $rateLimits @("plan_type", "planType")) {
                 Get-PropValue $rateLimits @("plan_type", "planType")
             }
@@ -2848,6 +2851,11 @@ function Show-Snapshot {
     Write-Host ("Plan      : {0}" -f ($(if ($Snapshot.PlanType) { $Snapshot.PlanType } else { "unknown" })))
     Write-Host ("Session   : {0}" -f $Snapshot.Session)
     Write-Host ("Source    : {0}" -f $Snapshot.SourceFile)
+    if ($Snapshot.RateLimitRows.Count -gt 0 -and
+        $Snapshot.PSObject.Properties["RateLimitEventTimestamp"] -and
+        -not [string]::IsNullOrWhiteSpace([string]$Snapshot.RateLimitEventTimestamp)) {
+        Write-Host ("RateLimit : {0}" -f $Snapshot.RateLimitEventTimestamp)
+    }
     Write-Host ""
 
     if ($Snapshot.RateLimitRows.Count -gt 0) {

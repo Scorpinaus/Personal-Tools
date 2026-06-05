@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Daily Token Usage - Codex Usage Monitor</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <div class="brand">
+        <h1>Codex Usage Monitor</h1>
+        <nav class="top-nav" aria-label="Dashboard views">
+          <a class="nav-link" href="/index.html">Overview</a>
+          <a class="nav-link active" href="/daily.html">Daily Usage</a>
+        </nav>
+      </div>
+      <div class="status">
+        <span class="pill" id="monitorState">Running</span>
+        <span class="pill" id="updated">Updated: loading</span>
+        <span class="pill" id="plan">Plan: unknown</span>
+        <span class="pill" id="refresh">Refresh: 30s</span>
+        <button class="stop-button" id="stopMonitor" type="button">Stop</button>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div id="error" class="error"></div>
+    <section class="daily-section">
+      <div class="section-heading-row">
+        <div>
+          <h2>Daily Token Usage</h2>
+          <p class="source" id="dailyRange">Loading daily token activity.</p>
+        </div>
+        <div class="segmented" role="tablist" aria-label="Daily usage range">
+          <button class="segment active" type="button" data-days="90">90 days</button>
+          <button class="segment" type="button" data-days="180">180 days</button>
+          <button class="segment" type="button" data-days="365">1 year</button>
+        </div>
+      </div>
+      <div id="dailySummary" class="metric-strip"></div>
+      <div id="dailyHeatmap"></div>
+    </section>
+    <section>
+      <h2>Recent Daily Breakdown</h2>
+      <div id="dailyTable"></div>
+    </section>
+  </main>
+  <script src="/daily.js"></script>
+</body>
+</html>

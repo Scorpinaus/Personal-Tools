@@ -257,6 +257,9 @@ sealed class UsageMonitor
                 Timestamp = sourceMatch.EventTimestampText,
                 SourceFile = sourceMatch.SourceFile,
                 Session = sourceMatch.Session,
+                RateLimitEventTimestamp = rateLimitMatch?.EventTimestampText,
+                RateLimitSourceFile = rateLimitMatch?.SourceFile,
+                RateLimitSession = rateLimitMatch?.Session,
                 PlanType = JsonTools.GetString(rateLimits, "plan_type", "planType") ?? GetLatestPlanType(legacyLimit, legacyTail),
                 RateLimitRows = rateLimitRows,
                 RateLimitTokenUsageRows = GetRateLimitTokenUsageRows(rateLimitRows, _options.RollingMaxFiles),
@@ -3236,6 +3239,10 @@ static class ConsoleRenderer
         Console.WriteLine($"Plan      : {snapshot.PlanType ?? "unknown"}");
         Console.WriteLine($"Session   : {snapshot.Session}");
         Console.WriteLine($"Source    : {snapshot.SourceFile}");
+        if (snapshot.RateLimitRows.Count > 0 && !string.IsNullOrWhiteSpace(snapshot.RateLimitEventTimestamp))
+        {
+            Console.WriteLine($"RateLimit : {snapshot.RateLimitEventTimestamp}");
+        }
         Console.WriteLine();
         PrintRows("Rate limits", snapshot.RateLimitRows.Select(r => $"{r.Window,-10} used {r.UsedPercent,6:N2}% remaining {r.RemainingPercent,6:N2}% resets {UsageMonitor.FormatDisplayDateTime(r.ResetsAt) ?? ""}"));
         PrintRows("1% token usage tracker", snapshot.RateLimitTokenUsageRows.Select(r => $"{r.Window,-10} used {r.UsedPercent,6:N2}% total {r.TotalTokens,12:N0} tokensPer1Percent {r.TokensPerPercent?.ToString("N0", CultureInfo.InvariantCulture) ?? ""} implied100Percent {r.ImpliedFullWindowTokens?.ToString("N0", CultureInfo.InvariantCulture) ?? ""} events {r.Events,5:N0}"));
@@ -3350,6 +3357,9 @@ static class SnapshotJson
             snapshot.PlanType,
             snapshot.Session,
             snapshot.SourceFile,
+            snapshot.RateLimitEventTimestamp,
+            snapshot.RateLimitSession,
+            snapshot.RateLimitSourceFile,
             snapshot.CostBasis,
             snapshot.CostBasisMode,
             snapshot.PricingMode,
@@ -3603,6 +3613,9 @@ sealed class Snapshot
     public string? Timestamp { get; set; }
     public string? SourceFile { get; set; }
     public string? Session { get; set; }
+    public string? RateLimitEventTimestamp { get; set; }
+    public string? RateLimitSourceFile { get; set; }
+    public string? RateLimitSession { get; set; }
     public string? PlanType { get; set; }
     public List<RateLimitRow> RateLimitRows { get; set; } = [];
     public List<RateLimitTokenUsageRow> RateLimitTokenUsageRows { get; set; } = [];
