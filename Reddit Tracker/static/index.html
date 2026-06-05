@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reddit Tracker</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Reddit Tracker</h1>
+        <p id="apiStatus" class="muted">Checking local setup...</p>
+      </div>
+      <div class="top-actions">
+        <button id="syncButton" class="primary" type="button">Run Sync</button>
+        <button id="refreshButton" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar" aria-label="Tracker settings">
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>Communities</h2>
+            <span id="communityCount" class="count">0</span>
+          </div>
+          <form id="communityForm" class="inline-form">
+            <input id="communityInput" name="name" placeholder="r/python" autocomplete="off">
+            <button type="submit">Add</button>
+          </form>
+          <div id="communityList" class="item-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>Terms</h2>
+            <span id="termCount" class="count">0</span>
+          </div>
+          <form id="termForm" class="stack-form">
+            <div class="inline-form">
+              <input id="termInput" name="phrase" placeholder="keyword or phrase" autocomplete="off">
+              <button type="submit">Add</button>
+            </div>
+            <label class="check-row">
+              <input id="caseSensitiveInput" type="checkbox">
+              <span>Case-sensitive</span>
+            </label>
+          </form>
+          <div id="termList" class="item-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>Sync</h2>
+          </div>
+          <dl class="sync-meta">
+            <div>
+              <dt>Status</dt>
+              <dd id="syncStatus">No sync yet</dd>
+            </div>
+            <div>
+              <dt>Requests</dt>
+              <dd id="syncRequests">0</dd>
+            </div>
+            <div>
+              <dt>Seen</dt>
+              <dd id="syncSeen">0</dd>
+            </div>
+            <div>
+              <dt>Saved</dt>
+              <dd id="syncSaved">0</dd>
+            </div>
+          </dl>
+          <p id="syncErrors" class="error-text"></p>
+        </section>
+      </aside>
+
+      <section class="content" aria-label="Saved Reddit matches">
+        <div class="toolbar">
+          <input id="textFilter" placeholder="Filter saved matches" autocomplete="off">
+          <select id="subredditFilter">
+            <option value="">All communities</option>
+          </select>
+          <select id="termFilter">
+            <option value="">All terms</option>
+          </select>
+          <select id="readFilter">
+            <option value="all">All read states</option>
+            <option value="unread">Unread</option>
+            <option value="read">Read</option>
+          </select>
+          <label class="check-row">
+            <input id="archivedFilter" type="checkbox">
+            <span>Archived</span>
+          </label>
+        </div>
+
+        <div class="results-heading">
+          <h2>Matches</h2>
+          <span id="resultCount" class="count">0</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Post</th>
+                <th>Community</th>
+                <th>Terms</th>
+                <th>Stats</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="postsTable">
+              <tr>
+                <td colspan="5" class="empty">No saved matches yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
