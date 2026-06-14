@@ -223,6 +223,32 @@ try {
         Assert-True (Test-Path -LiteralPath (Join-Path $codexHome "usage-history\rate_limit_samples.jsonl")) "Snapshot should write rate-limit history."
     }
 
+    Invoke-Test "session file cache reuses listing until reset" {
+        $cacheHome = Join-Path $tempRoot "cache-home"
+        $cacheSessions = Join-Path $cacheHome "sessions"
+        New-Item -ItemType Directory -Force -Path $cacheSessions | Out-Null
+
+        Set-Content -LiteralPath (Join-Path $cacheSessions "first.jsonl") -Value "" -Encoding UTF8
+
+        . $monitorScript `
+            -CodexHome $cacheHome `
+            -LibraryOnly `
+            -NoOpen
+
+        Reset-SessionFilesCache
+        $firstListing = @(Get-SessionFiles -Root $cacheHome -Limit 0)
+        Assert-Equal 1 $firstListing.Count "Initial session listing should include one file."
+
+        Set-Content -LiteralPath (Join-Path $cacheSessions "second.jsonl") -Value "" -Encoding UTF8
+
+        $cachedListing = @(Get-SessionFiles -Root $cacheHome -Limit 0)
+        Assert-Equal 1 $cachedListing.Count "Cached session listing should be reused until reset."
+
+        Reset-SessionFilesCache
+        $freshListing = @(Get-SessionFiles -Root $cacheHome -Limit 0)
+        Assert-Equal 2 $freshListing.Count "Reset session listing should see new files."
+    }
+
     Invoke-Test "public monitor entrypoint supports once console mode" {
         $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $monitorScript `
             -CodexHome $codexHome `

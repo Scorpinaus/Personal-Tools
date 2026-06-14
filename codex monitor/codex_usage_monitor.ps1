@@ -40,6 +40,7 @@ $script:NoCompactionCostWindowCache = @{}
 $script:CostPeriodCache = @{}
 $script:NoCompactionCostPeriodCache = @{}
 $script:UsageDeltasCache = @{}
+$script:SessionFilesCache = @{}
 $script:ConversationLookbackHours = $ConversationLookbackHours
 $script:ConversationFallbackLookbackDays = $ConversationFallbackLookbackDays
 $script:ConversationFallbackMaxFiles = $ConversationFallbackMaxFiles

@@ -13,6 +13,8 @@ function Get-LatestCodexUsageSnapshot {
         [switch]$ForceCostRefresh
     )
 
+    Reset-SessionFilesCache
+
     $nowUtc = [DateTime]::UtcNow
     $searches = @()
     $overviewFiles = @()

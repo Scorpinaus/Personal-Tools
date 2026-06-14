@@ -211,6 +211,7 @@ The SQLite database and rate-limit samples are derived from Codex session data. 
 
 - The PowerShell dashboard serves assets from `dashboard/`.
 - The PowerShell entry points dot-source implementation files from `ps/`.
+- Each PowerShell snapshot resets and reuses an in-memory session-file listing cache, avoiding repeated recursive session-tree walks inside one dashboard/API refresh.
 - The .NET app serves and publishes assets from `net/dashboard/`.
 - Keep both dashboard folders in sync when changing the UI.
 - `net/CodexUsageMonitor.csproj` publishes a Windows x64, self-contained, single-file executable and copies `net/dashboard/**` beside it.
