@@ -256,6 +256,7 @@
         stopped = true;
         if (refreshTimer) clearInterval(refreshTimer);
         document.getElementById("monitorState").textContent = "Stopped";
+        document.getElementById("monitorState").classList.add("is-stopped");
         document.getElementById("refresh").textContent = "Refresh: stopped";
         stopMonitorButton.textContent = "Stopped";
         showStatusMessage("Monitor stopped. You can close this tab.", "info");
@@ -275,6 +276,7 @@
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         document.getElementById("monitorState").textContent = "Running";
+        document.getElementById("monitorState").classList.remove("is-stopped");
         error.style.display = "none";
         document.getElementById("updated").textContent = `Updated: ${data.UpdatedAtLocal}`;
         document.getElementById("plan").textContent = `Plan: ${data.PlanType || "unknown"}`;

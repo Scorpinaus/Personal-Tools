@@ -17,8 +17,8 @@
         </nav>
       </div>
       <div class="status">
-        <span class="pill" id="monitorState">Running</span>
-        <span class="pill" id="updated">Updated: loading</span>
+        <span class="pill pill-live" id="monitorState">Running</span>
+        <span class="pill pill-time" id="updated">Updated: loading</span>
         <span class="pill" id="plan">Plan: unknown</span>
         <span class="pill" id="refresh">Refresh: 30s</span>
         <button class="stop-button" id="stopMonitor" type="button">Stop</button>
@@ -28,11 +28,11 @@
   <main>
     <div id="error" class="error"></div>
     <div class="grid">
-      <section>
+      <section class="priority-section">
         <h2>Rate Limits</h2>
         <div id="rateLimits"></div>
       </section>
-      <section>
+      <section class="priority-section">
         <h2>Rolling Token Usage</h2>
         <div id="rollingTokens"></div>
       </section>

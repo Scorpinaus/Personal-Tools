@@ -34,15 +34,41 @@ function Format-WidgetUpdatedTime {
     param([object]$Value)
 
     if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
-        return "Updated: no rate-limit event yet"
+        return "Updated: not refreshed yet"
     }
 
     try {
-        return "Updated: " + ([datetime]$Value).ToString("MMM d HH:mm:ss")
+        return "Updated: " + ([datetime]$Value).ToString("yyyy-MM-dd HH:mm:ss")
     }
     catch {
         return "Updated: " + [string]$Value
     }
+}
+
+function Get-WidgetLimitToneColor {
+    param(
+        [object]$RemainingPercent,
+        [System.Drawing.Color]$Accent,
+        [System.Drawing.Color]$Warning,
+        [System.Drawing.Color]$Danger
+    )
+
+    try {
+        $remaining = [double]$RemainingPercent
+    }
+    catch {
+        return $Accent
+    }
+
+    if ($remaining -le 10) {
+        return $Danger
+    }
+
+    if ($remaining -le 25) {
+        return $Warning
+    }
+
+    return $Accent
 }
 
 function Compress-WidgetText {
@@ -133,8 +159,10 @@ function Set-WidgetWindowRow {
     if ($null -eq $Row) {
         $Controls.Remaining.Text = "--"
         $Controls.Used.Text = "Used --"
-        $Controls.Reset.Text = "Resets unknown"
-        $Controls.Progress.Value = 0
+        $Controls.Reset.Text = "unknown"
+        $Controls.Remaining.ForeColor = $Controls.Accent
+        $Controls.ProgressFill.BackColor = $Controls.Accent
+        $Controls.ProgressFill.Width = 0
         return
     }
 
@@ -148,10 +176,13 @@ function Set-WidgetWindowRow {
         }
     }
 
+    $tone = Get-WidgetLimitToneColor -RemainingPercent $Row.RemainingPercent -Accent $Controls.Accent -Warning $Controls.Warning -Danger $Controls.Danger
     $Controls.Remaining.Text = Format-WidgetPercent $Row.RemainingPercent
+    $Controls.Remaining.ForeColor = $tone
     $Controls.Used.Text = "Used " + (Format-WidgetPercent $Row.UsedPercent)
-    $Controls.Reset.Text = "Resets " + (Format-WidgetResetTime $Row.ResetsAt)
-    $Controls.Progress.Value = [int][Math]::Round($used)
+    $Controls.Reset.Text = Format-WidgetResetTime $Row.ResetsAt
+    $Controls.ProgressFill.BackColor = $tone
+    $Controls.ProgressFill.Width = [int][Math]::Round(($Controls.ProgressTrack.Width * $used) / 100.0)
 }
 
 function New-WidgetLimitPanel {
@@ -161,78 +192,101 @@ function New-WidgetLimitPanel {
         [System.Drawing.Font]$TitleFont,
         [System.Drawing.Font]$ValueFont,
         [System.Drawing.Color]$Accent,
+        [System.Drawing.Color]$Warning,
+        [System.Drawing.Color]$Danger,
         [System.Drawing.Color]$Muted,
-        [System.Drawing.Color]$PanelBack
+        [System.Drawing.Color]$PanelBack,
+        [System.Drawing.Color]$TrackBack
     )
 
     $panel = New-Object System.Windows.Forms.Panel
-    $panel.Left = 12
+    $panel.Left = 14
     $panel.Top = $Top
-    $panel.Width = 320
-    $panel.Height = 76
+    $panel.Width = 334
+    $panel.Height = 82
     $panel.BackColor = $PanelBack
+    $panel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
     $name = New-Object System.Windows.Forms.Label
     $name.Text = $Window.ToUpperInvariant()
-    $name.Left = 10
-    $name.Top = 8
-    $name.Width = 88
+    $name.Left = 12
+    $name.Top = 9
+    $name.Width = 92
     $name.Height = 18
     $name.Font = $TitleFont
+    $name.ForeColor = $Muted
 
     $remaining = New-Object System.Windows.Forms.Label
     $remaining.Text = "--"
-    $remaining.Left = 10
-    $remaining.Top = 28
-    $remaining.Width = 118
+    $remaining.Left = 12
+    $remaining.Top = 29
+    $remaining.Width = 142
     $remaining.Height = 30
     $remaining.Font = $ValueFont
     $remaining.ForeColor = $Accent
 
     $remainingCaption = New-Object System.Windows.Forms.Label
     $remainingCaption.Text = "remaining"
-    $remainingCaption.Left = 132
-    $remainingCaption.Top = 37
-    $remainingCaption.Width = 72
+    $remainingCaption.Left = 154
+    $remainingCaption.Top = 38
+    $remainingCaption.Width = 62
     $remainingCaption.Height = 18
     $remainingCaption.ForeColor = $Muted
 
     $used = New-Object System.Windows.Forms.Label
     $used.Text = "Used --"
     $used.Left = 226
-    $used.Top = 10
-    $used.Width = 84
+    $used.Top = 11
+    $used.Width = 94
     $used.Height = 18
     $used.TextAlign = [System.Drawing.ContentAlignment]::TopRight
     $used.ForeColor = $Muted
 
+    $resetCaption = New-Object System.Windows.Forms.Label
+    $resetCaption.Text = "Resets"
+    $resetCaption.Left = 230
+    $resetCaption.Top = 32
+    $resetCaption.Width = 90
+    $resetCaption.Height = 14
+    $resetCaption.TextAlign = [System.Drawing.ContentAlignment]::TopRight
+    $resetCaption.ForeColor = $Muted
+
     $reset = New-Object System.Windows.Forms.Label
-    $reset.Text = "Resets unknown"
-    $reset.Left = 226
-    $reset.Top = 30
-    $reset.Width = 84
-    $reset.Height = 32
+    $reset.Text = "unknown"
+    $reset.Left = 206
+    $reset.Top = 48
+    $reset.Width = 114
+    $reset.Height = 16
     $reset.TextAlign = [System.Drawing.ContentAlignment]::TopRight
     $reset.ForeColor = $Muted
 
-    $progress = New-Object System.Windows.Forms.ProgressBar
-    $progress.Left = 10
-    $progress.Top = 62
-    $progress.Width = 300
-    $progress.Height = 6
-    $progress.Minimum = 0
-    $progress.Maximum = 100
-    $progress.Value = 0
-    $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
+    $progressTrack = New-Object System.Windows.Forms.Panel
+    $progressTrack.Left = 12
+    $progressTrack.Top = 67
+    $progressTrack.Width = 308
+    $progressTrack.Height = 7
+    $progressTrack.BackColor = $TrackBack
 
-    $panel.Controls.AddRange(@($name, $remaining, $remainingCaption, $used, $reset, $progress))
+    $progressFill = New-Object System.Windows.Forms.Panel
+    $progressFill.Left = 0
+    $progressFill.Top = 0
+    $progressFill.Width = 0
+    $progressFill.Height = 7
+    $progressFill.BackColor = $Accent
+    $progressTrack.Controls.Add($progressFill)
+
+    $panel.Controls.AddRange(@($name, $remaining, $remainingCaption, $used, $resetCaption, $reset, $progressTrack))
 
     return @{
         Panel = $panel
         Remaining = $remaining
         Used = $used
         Reset = $reset
-        Progress = $progress
+        ProgressTrack = $progressTrack
+        ProgressFill = $progressFill
+        Accent = $Accent
+        Warning = $Warning
+        Danger = $Danger
     }
 }
 
@@ -255,14 +309,18 @@ function Start-CodexUsageWidget {
     [System.Windows.Forms.Application]::EnableVisualStyles()
 
     $accent = [System.Drawing.ColorTranslator]::FromHtml("#0f766e")
-    $muted = [System.Drawing.ColorTranslator]::FromHtml("#666b72")
-    $panelBack = [System.Drawing.ColorTranslator]::FromHtml("#fbfaf8")
-    $formBack = [System.Drawing.ColorTranslator]::FromHtml("#f7f7f4")
+    $warning = [System.Drawing.ColorTranslator]::FromHtml("#b7791f")
+    $danger = [System.Drawing.ColorTranslator]::FromHtml("#b42318")
+    $muted = [System.Drawing.ColorTranslator]::FromHtml("#66736f")
+    $panelBack = [System.Drawing.ColorTranslator]::FromHtml("#ffffff")
+    $trackBack = [System.Drawing.ColorTranslator]::FromHtml("#dce8e4")
+    $formBack = [System.Drawing.ColorTranslator]::FromHtml("#eef2f1")
+    $accentSoft = [System.Drawing.ColorTranslator]::FromHtml("#e0f4f0")
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Codex Limits"
-    $form.Width = 360
-    $form.Height = 282
+    $form.Width = 376
+    $form.Height = 306
     $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedToolWindow
     $form.MaximizeBox = $false
     $form.MinimizeBox = $false
@@ -279,39 +337,59 @@ function Start-CodexUsageWidget {
     )
 
     $titleFont = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
-    $valueFont = New-Object System.Drawing.Font("Segoe UI", 19.0, [System.Drawing.FontStyle]::Bold)
+    $valueFont = New-Object System.Drawing.Font("Segoe UI", 20.0, [System.Drawing.FontStyle]::Bold)
 
     $title = New-Object System.Windows.Forms.Label
-    $title.Text = "Current Codex Limits"
-    $title.Left = 12
+    $title.Text = "Codex Limits"
+    $title.Left = 14
     $title.Top = 10
-    $title.Width = 210
-    $title.Height = 22
-    $title.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $title.Width = 170
+    $title.Height = 20
+    $title.Font = New-Object System.Drawing.Font("Segoe UI", 10.5, [System.Drawing.FontStyle]::Bold)
+
+    $subtitle = New-Object System.Windows.Forms.Label
+    $subtitle.Text = "Live rate-limit windows"
+    $subtitle.Left = 14
+    $subtitle.Top = 29
+    $subtitle.Width = 190
+    $subtitle.Height = 17
+    $subtitle.ForeColor = $muted
+
+    $live = New-Object System.Windows.Forms.Label
+    $live.Text = "LIVE"
+    $live.Left = 300
+    $live.Top = 13
+    $live.Width = 48
+    $live.Height = 20
+    $live.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $live.Font = New-Object System.Drawing.Font("Segoe UI", 7.5, [System.Drawing.FontStyle]::Bold)
+    $live.ForeColor = $accent
+    $live.BackColor = $accentSoft
+    $live.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
     $updatedStatus = New-Object System.Windows.Forms.Label
     $updatedStatus.Text = "Updated: loading"
-    $updatedStatus.Left = 12
-    $updatedStatus.Top = 200
-    $updatedStatus.Width = 320
+    $updatedStatus.Left = 14
+    $updatedStatus.Top = 222
+    $updatedStatus.Width = 334
     $updatedStatus.Height = 18
     $updatedStatus.ForeColor = $muted
 
     $sourceStatus = New-Object System.Windows.Forms.Label
     $sourceStatus.Text = "Source: loading"
-    $sourceStatus.Left = 12
-    $sourceStatus.Top = 218
-    $sourceStatus.Width = 320
+    $sourceStatus.Left = 14
+    $sourceStatus.Top = 241
+    $sourceStatus.Width = 334
     $sourceStatus.Height = 18
     $sourceStatus.ForeColor = $muted
     $sourceStatus.AutoEllipsis = $true
 
     $toolTip = New-Object System.Windows.Forms.ToolTip
 
-    $fiveHour = New-WidgetLimitPanel -Window "5 hour" -Top 38 -TitleFont $titleFont -ValueFont $valueFont -Accent $accent -Muted $muted -PanelBack $panelBack
-    $oneWeek = New-WidgetLimitPanel -Window "1 week" -Top 116 -TitleFont $titleFont -ValueFont $valueFont -Accent $accent -Muted $muted -PanelBack $panelBack
+    $fiveHour = New-WidgetLimitPanel -Window "5 hour" -Top 50 -TitleFont $titleFont -ValueFont $valueFont -Accent $accent -Warning $warning -Danger $danger -Muted $muted -PanelBack $panelBack -TrackBack $trackBack
+    $oneWeek = New-WidgetLimitPanel -Window "1 week" -Top 135 -TitleFont $titleFont -ValueFont $valueFont -Accent $accent -Warning $warning -Danger $danger -Muted $muted -PanelBack $panelBack -TrackBack $trackBack
 
-    $form.Controls.AddRange(@($title, $fiveHour.Panel, $oneWeek.Panel, $updatedStatus, $sourceStatus))
+    $form.Controls.AddRange(@($title, $subtitle, $live, $fiveHour.Panel, $oneWeek.Panel, $updatedStatus, $sourceStatus))
 
     $updateAction = {
         try {
@@ -336,14 +414,8 @@ function Start-CodexUsageWidget {
 
             Set-WidgetWindowRow -Controls $fiveHour -Row (Get-WidgetRateLimitRow -Rows $snapshot.RateLimitRows -Window "5 hour")
             Set-WidgetWindowRow -Controls $oneWeek -Row (Get-WidgetRateLimitRow -Rows $snapshot.RateLimitRows -Window "1 week")
-            $sampledAt = if ($snapshot.PSObject.Properties["RateLimitEventTimestamp"] -and $snapshot.RateLimitEventTimestamp) {
-                $snapshot.RateLimitEventTimestamp
-            }
-            else {
-                $snapshot.Timestamp
-            }
             $source = Get-WidgetSampleSource $snapshot
-            $updatedStatus.Text = Format-WidgetUpdatedTime $sampledAt
+            $updatedStatus.Text = Format-WidgetUpdatedTime (Get-Date)
             $sourceStatus.Text = $source.Text
             $toolTip.SetToolTip($sourceStatus, $source.ToolTip)
         }

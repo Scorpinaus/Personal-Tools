@@ -116,6 +116,14 @@
       return Math.max(0, Math.min(100, numeric));
     }
 
+    function limitToneClass(remainingPercent) {
+      const remaining = Number(remainingPercent);
+      if (!Number.isFinite(remaining)) return "limit-unknown";
+      if (remaining <= 10) return "limit-critical";
+      if (remaining <= 25) return "limit-warning";
+      return "limit-healthy";
+    }
+
     function relativeAge(value) {
       const date = parseTime(value);
       if (!date) return "";
@@ -149,15 +157,20 @@
         const used = Number(row.UsedPercent);
         const remaining = Number(row.RemainingPercent);
         const usedWidth = clampPercent(used);
+        const toneClass = limitToneClass(remaining);
         return `
-          <div class="rate-limit-row">
+          <div class="rate-limit-row ${toneClass}">
             <div class="rate-limit-top">
               <strong>${esc(row.Window)}</strong>
               <span>${fmtPercent(used)} used</span>
             </div>
+            <div class="rate-limit-kpi">
+              <span>${fmtPercent(remaining) || "--"}</span>
+              <small>remaining</small>
+            </div>
             <div class="rate-limit-bar" aria-hidden="true"><span style="width: ${usedWidth}%"></span></div>
             <div class="rate-limit-meta">
-              <span>Remaining <strong>${fmtPercent(remaining)}</strong></span>
+              <span>Used <strong>${fmtPercent(used)}</strong></span>
               <span>Window <strong>${fmt(row.WindowMinutes)} min</strong></span>
               <span>Resets <strong>${esc(fmtDate(row.ResetsAt))}</strong></span>
             </div>
@@ -314,10 +327,10 @@
             ${bars}
           </svg>
           <div class="total">
-            <span>remaining: <strong>${fmt(stat.latest)}%</strong></span>
-            <span>low: <strong>${fmt(stat.low)}%</strong></span>
-            <span>average: <strong>${fmt(stat.average === null ? null : Math.round(stat.average * 100) / 100)}%</strong></span>
-            <span>samples: <strong>${fmt(stat.samples)}</strong></span>
+            <span>Remaining <strong>${fmt(stat.latest)}%</strong></span>
+            <span>Low <strong>${fmt(stat.low)}%</strong></span>
+            <span>Average <strong>${fmt(stat.average === null ? null : Math.round(stat.average * 100) / 100)}%</strong></span>
+            <span>Samples <strong>${fmt(stat.samples)}</strong></span>
           </div>
         </div>
       `;
@@ -513,9 +526,9 @@
 
     function renderModelCostTotals(total) {
       return `<div class="total">
-        <span>totalCostUsd: <strong>${fmtMoney(total.TotalCostUsd || 0)}</strong></span>
-        <span>totalCostSgd: <strong>${fmtMoney(total.TotalCostSgd || 0)}</strong></span>
-        <span>totalCostCredits: <strong>${fmt(total.TotalCostCredits || 0)}</strong></span>
+        <span>Cost USD <strong>${fmtMoney(total.TotalCostUsd || 0)}</strong></span>
+        <span>Cost SGD <strong>${fmtMoney(total.TotalCostSgd || 0)}</strong></span>
+        <span>Credits <strong>${fmt(total.TotalCostCredits || 0)}</strong></span>
       </div>`;
     }
 
@@ -625,9 +638,9 @@
             { key: "Attribution", label: "Attribution" }
           ])}
           <div class="total">
-            <span>totalCostUsd: <strong>${fmtMoney(totalUsd)}</strong></span>
-            <span>totalCostSgd: <strong>${fmtMoney(totalUsd * Number(usdToSgdRate || 0))}</strong></span>
-            <span>totalCostCredits: <strong>${fmt(totalCredits)}</strong></span>
+            <span>Cost USD <strong>${fmtMoney(totalUsd)}</strong></span>
+            <span>Cost SGD <strong>${fmtMoney(totalUsd * Number(usdToSgdRate || 0))}</strong></span>
+            <span>Credits <strong>${fmt(totalCredits)}</strong></span>
           </div>
         `;
       }).join("") + `<p class="source">Source attribution is estimated from logged text lengths and reconciled against exact-ish model/period token totals.</p>`;
@@ -673,13 +686,13 @@
       const totals = row?.CostTotals || {};
       if (currentCostBasisMode === "CodexCredits") {
         return `<div class="total">
-          <span>totalCostCredits: <strong>${fmt(totals.TotalCostCredits || 0)}</strong></span>
+          <span>Credits <strong>${fmt(totals.TotalCostCredits || 0)}</strong></span>
         </div>`;
       }
 
       return `<div class="total">
-        <span>totalCostUsd: <strong>${fmtMoney(totals.TotalCostUsd || 0)}</strong></span>
-        <span>totalCostSgd: <strong>${fmtMoney(totals.TotalCostSgd || 0)}</strong></span>
+        <span>Cost USD <strong>${fmtMoney(totals.TotalCostUsd || 0)}</strong></span>
+        <span>Cost SGD <strong>${fmtMoney(totals.TotalCostSgd || 0)}</strong></span>
       </div>`;
     }
 
@@ -726,8 +739,8 @@
     function renderNoCompactionCostSummary(row) {
       const totals = row?.NoCompactionCostTotals || {};
       return `<div class="total">
-        <span>totalCostUsd: <strong>${fmtMoney(totals.TotalCostUsd || 0)}</strong></span>
-        <span>totalCostSgd: <strong>${fmtMoney(totals.TotalCostSgd || 0)}</strong></span>
+        <span>Cost USD <strong>${fmtMoney(totals.TotalCostUsd || 0)}</strong></span>
+        <span>Cost SGD <strong>${fmtMoney(totals.TotalCostSgd || 0)}</strong></span>
       </div>`;
     }
 
@@ -892,6 +905,7 @@
         stopped = true;
         if (refreshTimer) clearInterval(refreshTimer);
         document.getElementById("monitorState").textContent = "Stopped";
+        document.getElementById("monitorState").classList.add("is-stopped");
         document.getElementById("refresh").textContent = "Refresh: stopped";
         stopMonitorButton.textContent = "Stopped";
         showStatusMessage("Monitor stopped. You can close this tab.", "info");
@@ -911,6 +925,7 @@
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = normalizeUsageData(await res.json());
         document.getElementById("monitorState").textContent = "Running";
+        document.getElementById("monitorState").classList.remove("is-stopped");
         error.style.display = "none";
         document.getElementById("updated").textContent = `Updated: ${data.UpdatedAtLocal}`;
         document.getElementById("plan").textContent = `Plan: ${data.PlanType || "unknown"}`;
