@@ -1,15 +1,16 @@
 # Codex Usage Monitor
 
-Codex Usage Monitor is a local Windows dashboard and console monitor for Codex session usage. It reads Codex JSONL session files, summarizes rate-limit and token activity, and serves a browser dashboard from `127.0.0.1`.
+Codex Usage Monitor is a local Windows dashboard, desktop widget, and console monitor for Codex session usage. It reads Codex JSONL session files, summarizes rate-limit and token activity, serves a browser dashboard from `127.0.0.1`, and can show a floating desktop widget for the live 5-hour and 1-week limits.
 
 The project currently has two implementations:
 
 - `codex_usage_monitor.ps1`: the PowerShell monitor entry point, backed by dot-sourced modules in `ps/`.
-- `net/`: a .NET 8 port with SQLite-backed indexing and a self-contained Windows publish target.
+- `net/`: a .NET 8 port with SQLite-backed indexing and a compact Windows publish target.
 
 ## What It Shows
 
 - Current Codex rate-limit windows, remaining percentage, and reset times.
+- Floating Windows desktop widget for the live 5-hour and 1-week limits.
 - Rolling token usage for recent activity windows.
 - Daily token usage with a 90 day, 180 day, and 1 year heatmap view.
 - Conversation-level token usage, cache hit ratio, and context-window details.
@@ -25,7 +26,7 @@ Cost values are local estimates. They are useful for trend analysis, but they sh
 - Codex session data under `%USERPROFILE%\.codex`, or another folder passed with `-CodexHome`.
 - Optional: .NET 8 SDK if you want to run or publish the C# version.
 
-The published .NET executable is self-contained for Windows x64 and does not require the .NET runtime to be installed.
+The default published .NET executable is framework-dependent for Windows x64. It is much smaller, but requires the .NET 8 Windows Desktop Runtime on the machine that runs it.
 
 ## Quick Start
 
@@ -41,7 +42,7 @@ By default the dashboard starts at:
 http://127.0.0.1:8787/
 ```
 
-If port `8787` is busy, the monitor tries the next available local port. The dashboard opens automatically unless `-NoOpen` is passed.
+Normal monitor launch also starts a small always-on-top Windows desktop widget showing the live `5 hour` and `1 week` rate-limit percentages. If port `8787` is busy, the monitor tries the next available local port. The dashboard opens automatically unless `-NoOpen` is passed.
 
 To stop the PowerShell monitor:
 
@@ -63,6 +64,18 @@ Run without opening the browser:
 
 ```powershell
 .\codex_usage_monitor.ps1 -NoOpen -DashboardPort 8787
+```
+
+Run only the floating desktop widget:
+
+```powershell
+.\codex_usage_monitor.ps1 -Widget
+```
+
+Run the monitor without the floating widget:
+
+```powershell
+.\codex_usage_monitor.ps1 -NoWidget
 ```
 
 Print one snapshot to the console:
@@ -95,6 +108,13 @@ Start hidden with Windows Script Host:
 wscript.exe .\start_codex_monitor.vbs
 ```
 
+Start only the widget with the helper scripts:
+
+```powershell
+.\start_codex_widget.cmd
+wscript.exe .\start_codex_widget.vbs
+```
+
 Start the monitor when VS Code becomes the foreground app:
 
 ```powershell
@@ -113,20 +133,27 @@ dotnet run -- -NoOpen -DashboardPort 8787
 Run the published Windows executable:
 
 ```powershell
-.\net\bin\Release\net8.0\win-x64\publish\codex-usage-monitor.exe
+.\net\bin\Release\net8.0-windows\win-x64\publish\codex-usage-monitor.exe
 ```
 
-Publish a fresh self-contained executable:
+Publish a fresh compact executable:
 
 ```powershell
 cd .\net
 dotnet publish -c Release
 ```
 
+Publish a portable self-contained executable when you need to run on a machine without the .NET 8 Windows Desktop Runtime:
+
+```powershell
+cd .\net
+dotnet publish -c Release --self-contained true -p:SelfContained=true -p:EnableCompressionInSingleFile=true
+```
+
 The publish output must keep the executable and dashboard assets together:
 
 ```text
-net\bin\Release\net8.0\win-x64\publish\
+net\bin\Release\net8.0-windows\win-x64\publish\
   codex-usage-monitor.exe
   dashboard\
     index.html
@@ -153,6 +180,9 @@ The suite creates temporary synthetic Codex session data and verifies library sn
 | `-CodexHome` | `%USERPROFILE%\.codex` or `CODEX_HOME` | Root folder that contains Codex session data. |
 | `-DashboardPort` / `-Port` | `8787` | Local dashboard port. `-Port` is accepted by the dashboard wrapper and .NET app. |
 | `-NoOpen` | off | Start the server without launching a browser. |
+| `-Widget` | off | Start only the floating Windows desktop limits widget. |
+| `-NoWidget` | off | Do not auto-start the floating desktop widget during normal monitor launch. |
+| `-WidgetRefreshSeconds` | `30` | Refresh interval for the floating desktop widget. |
 | `-Once` | off | Generate one snapshot and exit. Useful with `-Console` or `-BackfillRateLimitHistory`. |
 | `-Console` | off | Print monitor output in the terminal instead of serving the dashboard. |
 | `-RefreshSeconds` | `3` | Console refresh interval. |
@@ -184,7 +214,7 @@ The suite creates temporary synthetic Codex session data and verifies library sn
 
 - `/index.html`: overview dashboard with rate limits, rolling usage, costs, and conversation usage.
 - `/daily.html`: daily token usage heatmap and recent daily breakdown.
-- `/api/usage`: JSON snapshot consumed by the dashboard.
+- `/api/usage`: JSON snapshot consumed by the dashboard. After the first successful response, this endpoint returns the cached snapshot immediately and refreshes the cache in the background.
 - `/api/shutdown`: local dashboard shutdown endpoint.
 
 The server binds to loopback only, so the dashboard is intended for local use on the same machine.
@@ -214,8 +244,8 @@ The SQLite database and rate-limit samples are derived from Codex session data. 
 - Each PowerShell snapshot resets and reuses an in-memory session-file listing cache, avoiding repeated recursive session-tree walks inside one dashboard/API refresh.
 - The .NET app serves and publishes assets from `net/dashboard/`.
 - Keep both dashboard folders in sync when changing the UI.
-- `net/CodexUsageMonitor.csproj` publishes a Windows x64, self-contained, single-file executable and copies `net/dashboard/**` beside it.
-- The repository intentionally commits the published Windows executable and dashboard publish assets under `net/bin/Release/net8.0/win-x64/publish/`.
+- `net/CodexUsageMonitor.csproj` targets `net8.0-windows`, publishes a Windows x64, framework-dependent, single-file executable by default, and copies `net/dashboard/**` beside it.
+- The repository intentionally commits the published Windows executable and dashboard publish assets under `net/bin/Release/net8.0-windows/win-x64/publish/`.
 - Local SQLite cache files are ignored by git.
 
 ## Project Layout
@@ -228,6 +258,8 @@ ps/                                             PowerShell monitor/dashboard mod
 tests/powershell_monitor_smoke.ps1             PowerShell smoke tests
 start_codex_monitor.cmd                         Visible PowerShell launcher
 start_codex_monitor.vbs                         Hidden-window launcher
+start_codex_widget.cmd                          Visible widget-only launcher
+start_codex_widget.vbs                          Hidden widget-only launcher
 stop_codex_monitor.cmd                          Stop helper for PowerShell monitor/port 8787
 start_codex_usage_monitor_when_vscode_active.ps1
                                                  Starts monitor when VS Code is foreground
@@ -237,7 +269,7 @@ net/README.md                                   .NET-specific notes
 net/Program.cs                                  .NET monitor, parser, cache, and server
 net/CodexUsageMonitor.csproj                    .NET publish configuration
 net/dashboard/                                  Static assets for .NET dashboard
-net/bin/Release/net8.0/win-x64/publish/         Committed Windows publish output
+net/bin/Release/net8.0-windows/win-x64/publish/ Committed Windows publish output
 ```
 
 ## Troubleshooting
@@ -251,7 +283,7 @@ If dashboard assets are missing in the .NET publish output, run `dotnet publish 
 If data looks stale in the .NET monitor, retry with:
 
 ```powershell
-.\net\bin\Release\net8.0\win-x64\publish\codex-usage-monitor.exe -RebuildCache
+.\net\bin\Release\net8.0-windows\win-x64\publish\codex-usage-monitor.exe -RebuildCache
 ```
 
 If PowerShell blocks script execution, launch with:

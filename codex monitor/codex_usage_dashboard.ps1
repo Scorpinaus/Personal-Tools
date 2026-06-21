@@ -73,6 +73,7 @@ $dashboardModules = @(
     "CodexDashboard.Json.ps1"
     "CodexDashboard.Http.ps1"
     "CodexDashboard.Assets.ps1"
+    "CodexDashboard.UsageCache.ps1"
 )
 
 foreach ($module in $dashboardModules) {
@@ -159,6 +160,7 @@ Write-Host "Press Ctrl+C to stop."
 $shutdownRequested = $false
 try {
     while (-not $shutdownRequested) {
+        Clear-CompletedUsageRefresh
         $client = $listener.AcceptTcpClient()
         try {
             $client.SendTimeout = 10000
@@ -169,21 +171,15 @@ try {
 
             $path = $request.Path
             if ($path -eq "/api/usage") {
-                $snapshot = Get-LatestCodexUsageSnapshot `
-                    -Root $CodexHome `
-                    -Archived:$IncludeArchived `
-                    -Limit $MaxFiles `
-                    -Tail $TailLines `
-                    -ConversationLookbackHours $ConversationLookbackHours `
-                    -ConversationFallbackLookbackDays $ConversationFallbackLookbackDays `
-                    -ConversationFallbackMaxFiles $ConversationFallbackMaxFiles `
-                    -ConversationFallbackTailLines $ConversationFallbackTailLines
-                if ($null -eq $snapshot) {
-                    Write-TcpHttpResponse $client 404 "application/json; charset=utf-8" (@{ error = "No Codex usage snapshot found." } | ConvertTo-Json)
+                $cachedResult = Get-UsageCachedResult
+                if ($null -eq $cachedResult) {
+                    $result = New-UsageJsonResult
+                    Set-UsageCachedResult $result
+                    Write-TcpHttpResponse $client $result.StatusCode $result.ContentType $result.Body
                 }
                 else {
-                    $json = Convert-SnapshotForJson $snapshot | ConvertTo-Json -Depth 8
-                    Write-TcpHttpResponse $client 200 "application/json; charset=utf-8" $json
+                    Start-UsageCacheRefresh
+                    Write-TcpHttpResponse $client $cachedResult.StatusCode $cachedResult.ContentType $cachedResult.Body
                 }
             }
             elseif ($path -eq "/api/shutdown") {
@@ -221,4 +217,5 @@ try {
 }
 finally {
     $listener.Stop()
+    Stop-UsageRefreshRunspace
 }

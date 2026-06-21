@@ -6,6 +6,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Drawing;
+using System.Windows.Forms;
 using Microsoft.Data.Sqlite;
 
 var options = MonitorOptions.Parse(args);
@@ -22,10 +24,24 @@ if (options.BackfillRateLimitHistory)
     }
 }
 
+if (options.Widget && !options.LibraryOnly)
+{
+    CodexLimitWidget.Run(options.CreateWidgetOptions());
+    return;
+}
+
 if (!options.LibraryOnly && !options.ConsoleMode && !options.Once)
 {
-    var server = new DashboardServer(options, monitor);
-    server.Run();
+    using var widget = options.NoWidget ? null : CodexLimitWidget.Start(options.CreateWidgetOptions());
+    try
+    {
+        var server = new DashboardServer(options, monitor);
+        server.Run();
+    }
+    finally
+    {
+        widget?.Dispose();
+    }
     return;
 }
 
@@ -74,10 +90,13 @@ sealed class MonitorOptions
     public bool LibraryOnly { get; set; }
     public bool ConsoleMode { get; set; }
     public bool NoOpen { get; set; }
+    public bool Widget { get; set; }
+    public bool NoWidget { get; set; }
     public bool DisableRateLimitHistory { get; set; }
     public bool BackfillRateLimitHistory { get; set; }
     public bool DisableSqliteCache { get; set; }
     public bool RebuildCache { get; set; }
+    public int WidgetRefreshSeconds { get; set; } = 30;
     public int DashboardPort { get; set; } = 8787;
     public string DashboardRoot { get; set; } = Path.Combine(AppContext.BaseDirectory, "dashboard");
     public string CacheDbPath { get; set; } = Path.Combine(GetMonitorDirectory(), "codex_usage_monitor.sqlite");
@@ -135,10 +154,13 @@ sealed class MonitorOptions
                 case "libraryonly": options.LibraryOnly = truthy; break;
                 case "console": options.ConsoleMode = truthy; break;
                 case "noopen": options.NoOpen = truthy; break;
+                case "widget": options.Widget = truthy; break;
+                case "nowidget": options.NoWidget = truthy; break;
                 case "disableratelimithistory": options.DisableRateLimitHistory = truthy; break;
                 case "backfillratelimithistory": options.BackfillRateLimitHistory = truthy; break;
                 case "disablesqlitecache": options.DisableSqliteCache = truthy; break;
                 case "rebuildcache": options.RebuildCache = truthy; break;
+                case "widgetrefreshseconds": options.WidgetRefreshSeconds = ToInt(value, options.WidgetRefreshSeconds); break;
                 case "cachedbpath": options.CacheDbPath = value ?? options.CacheDbPath; break;
                 case "dashboardport":
                 case "port": options.DashboardPort = ToInt(value, options.DashboardPort); break;
@@ -151,6 +173,40 @@ sealed class MonitorOptions
     static int ToInt(string? value, int fallback) => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? result : fallback;
     static double ToDouble(string? value, double fallback) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) ? result : fallback;
     static bool Valid(string? value, params string[] values) => value is not null && values.Any(v => string.Equals(v, value, StringComparison.OrdinalIgnoreCase));
+
+    public MonitorOptions CreateWidgetOptions() => new()
+    {
+        CodexHome = CodexHome,
+        RefreshSeconds = RefreshSeconds,
+        MaxFiles = MaxFiles,
+        TailLines = TailLines,
+        ConversationLookbackHours = ConversationLookbackHours,
+        ConversationFallbackLookbackDays = ConversationFallbackLookbackDays,
+        ConversationFallbackMaxFiles = ConversationFallbackMaxFiles,
+        ConversationFallbackTailLines = ConversationFallbackTailLines,
+        RollingMaxFiles = RollingMaxFiles,
+        RollingTailLines = RollingTailLines,
+        CostMaxFiles = CostMaxFiles,
+        CostTailLines = CostTailLines,
+        CostFiveHourRefreshSeconds = CostFiveHourRefreshSeconds,
+        CostWeekRefreshSeconds = CostWeekRefreshSeconds,
+        CostMonthRefreshSeconds = CostMonthRefreshSeconds,
+        RateLimitHistoryDays = RateLimitHistoryDays,
+        RateLimitHistorySampleSeconds = RateLimitHistorySampleSeconds,
+        UsdToSgdRate = UsdToSgdRate,
+        CostBasisMode = CostBasisMode,
+        PricingMode = PricingMode,
+        IncludeArchived = IncludeArchived,
+        DisableRateLimitHistory = true,
+        DisableSqliteCache = DisableSqliteCache,
+        RebuildCache = false,
+        Widget = true,
+        NoWidget = true,
+        WidgetRefreshSeconds = WidgetRefreshSeconds,
+        DashboardPort = DashboardPort,
+        DashboardRoot = DashboardRoot,
+        CacheDbPath = CacheDbPath
+    };
 
     static string GetMonitorDirectory()
     {
@@ -2912,6 +2968,367 @@ sealed class SqliteUsageCache
     }
 
     record SessionFileState(long Id, long FileSizeBytes, string LastWriteUtc, string IndexStatus);
+}
+
+sealed class CodexLimitWidget : IDisposable
+{
+    readonly MonitorOptions _options;
+    Thread? _thread;
+    CodexLimitWidgetForm? _form;
+    readonly ManualResetEventSlim _ready = new(false);
+
+    CodexLimitWidget(MonitorOptions options)
+    {
+        _options = options;
+    }
+
+    public static CodexLimitWidget Start(MonitorOptions options)
+    {
+        var widget = new CodexLimitWidget(options);
+        widget._thread = new Thread(widget.RunThread)
+        {
+            IsBackground = true,
+            Name = "Codex limit widget"
+        };
+        widget._thread.SetApartmentState(ApartmentState.STA);
+        widget._thread.Start();
+        widget._ready.Wait(TimeSpan.FromSeconds(5));
+        return widget;
+    }
+
+    public static void Run(MonitorOptions options)
+    {
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        var monitor = new UsageMonitor(options);
+        Application.Run(new CodexLimitWidgetForm(options, monitor));
+    }
+
+    void RunThread()
+    {
+        try
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            var monitor = new UsageMonitor(_options);
+            _form = new CodexLimitWidgetForm(_options, monitor);
+            _ready.Set();
+            Application.Run(_form);
+        }
+        catch
+        {
+            _ready.Set();
+        }
+    }
+
+    public void Dispose()
+    {
+        var form = _form;
+        if (form is not null && !form.IsDisposed)
+        {
+            try
+            {
+                if (form.InvokeRequired)
+                {
+                    form.BeginInvoke((MethodInvoker)(() => form.Close()));
+                }
+                else
+                {
+                    form.Close();
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        _ready.Dispose();
+    }
+}
+
+sealed class CodexLimitWidgetForm : Form
+{
+    readonly MonitorOptions _options;
+    readonly UsageMonitor _monitor;
+    readonly System.Windows.Forms.Timer _timer;
+    readonly Label _updatedStatus;
+    readonly Label _sourceStatus;
+    readonly ToolTip _toolTip;
+    readonly LimitControls _fiveHour;
+    readonly LimitControls _oneWeek;
+
+    public CodexLimitWidgetForm(MonitorOptions options, UsageMonitor monitor)
+    {
+        _options = options;
+        _monitor = monitor;
+
+        var accent = ColorTranslator.FromHtml("#0f766e");
+        var muted = ColorTranslator.FromHtml("#666b72");
+        var panelBack = ColorTranslator.FromHtml("#fbfaf8");
+        BackColor = ColorTranslator.FromHtml("#f7f7f4");
+        Font = new Font("Segoe UI", 8.5f);
+        Text = "Codex Limits";
+        Width = 360;
+        Height = 282;
+        FormBorderStyle = FormBorderStyle.FixedToolWindow;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        TopMost = true;
+        ShowInTaskbar = true;
+        StartPosition = FormStartPosition.Manual;
+        var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
+        Location = new Point(
+            Math.Max(workingArea.Left, workingArea.Right - Width - 18),
+            Math.Max(workingArea.Top, workingArea.Bottom - Height - 18));
+
+        var title = new Label
+        {
+            Text = "Current Codex Limits",
+            Left = 12,
+            Top = 10,
+            Width = 210,
+            Height = 22,
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
+        };
+
+        _fiveHour = CreateLimitControls("5 hour", 38, accent, muted, panelBack);
+        _oneWeek = CreateLimitControls("1 week", 116, accent, muted, panelBack);
+
+        _updatedStatus = new Label
+        {
+            Text = "Updated: loading",
+            Left = 12,
+            Top = 200,
+            Width = 320,
+            Height = 18,
+            ForeColor = muted
+        };
+        _sourceStatus = new Label
+        {
+            Text = "Source: loading",
+            Left = 12,
+            Top = 218,
+            Width = 320,
+            Height = 18,
+            ForeColor = muted,
+            AutoEllipsis = true
+        };
+        _toolTip = new ToolTip();
+
+        Controls.Add(title);
+        Controls.Add(_fiveHour.Panel);
+        Controls.Add(_oneWeek.Panel);
+        Controls.Add(_updatedStatus);
+        Controls.Add(_sourceStatus);
+
+        _timer = new System.Windows.Forms.Timer
+        {
+            Interval = Math.Max(5, _options.WidgetRefreshSeconds) * 1000
+        };
+        _timer.Tick += (_, _) => RefreshSnapshot();
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        RefreshSnapshot();
+        _timer.Start();
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        _timer.Stop();
+        _timer.Dispose();
+        _toolTip.Dispose();
+        base.OnFormClosed(e);
+    }
+
+    static LimitControls CreateLimitControls(string window, int top, Color accent, Color muted, Color panelBack)
+    {
+        var titleFont = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+        var valueFont = new Font("Segoe UI", 19.0f, FontStyle.Bold);
+        var panel = new Panel
+        {
+            Left = 12,
+            Top = top,
+            Width = 320,
+            Height = 76,
+            BackColor = panelBack
+        };
+        var name = new Label
+        {
+            Text = window.ToUpperInvariant(),
+            Left = 10,
+            Top = 8,
+            Width = 88,
+            Height = 18,
+            Font = titleFont
+        };
+        var remaining = new Label
+        {
+            Text = "--",
+            Left = 10,
+            Top = 28,
+            Width = 118,
+            Height = 30,
+            Font = valueFont,
+            ForeColor = accent
+        };
+        var remainingCaption = new Label
+        {
+            Text = "remaining",
+            Left = 132,
+            Top = 37,
+            Width = 72,
+            Height = 18,
+            ForeColor = muted
+        };
+        var used = new Label
+        {
+            Text = "Used --",
+            Left = 226,
+            Top = 10,
+            Width = 84,
+            Height = 18,
+            TextAlign = ContentAlignment.TopRight,
+            ForeColor = muted
+        };
+        var reset = new Label
+        {
+            Text = "Resets unknown",
+            Left = 226,
+            Top = 30,
+            Width = 84,
+            Height = 32,
+            TextAlign = ContentAlignment.TopRight,
+            ForeColor = muted
+        };
+        var progress = new ProgressBar
+        {
+            Left = 10,
+            Top = 62,
+            Width = 300,
+            Height = 6,
+            Minimum = 0,
+            Maximum = 100,
+            Value = 0,
+            Style = ProgressBarStyle.Continuous
+        };
+
+        panel.Controls.AddRange(new Control[] { name, remaining, remainingCaption, used, reset, progress });
+        return new LimitControls(panel, remaining, used, reset, progress);
+    }
+
+    void RefreshSnapshot()
+    {
+        try
+        {
+            var snapshot = _monitor.GetLatestSnapshot();
+            if (snapshot is null)
+            {
+                SetLimitRow(_fiveHour, null);
+                SetLimitRow(_oneWeek, null);
+                _updatedStatus.Text = "Updated: no Codex snapshot found";
+                _sourceStatus.Text = "Source: unknown";
+                _toolTip.SetToolTip(_sourceStatus, null);
+                return;
+            }
+
+            SetLimitRow(_fiveHour, FindRateLimitRow(snapshot, "5 hour"));
+            SetLimitRow(_oneWeek, FindRateLimitRow(snapshot, "1 week"));
+            var source = FormatSampleSource(snapshot);
+            _updatedStatus.Text = FormatUpdatedTimestamp(snapshot.RateLimitEventTimestamp ?? snapshot.Timestamp);
+            _sourceStatus.Text = source.Text;
+            _toolTip.SetToolTip(_sourceStatus, source.ToolTip);
+        }
+        catch (Exception ex)
+        {
+            _updatedStatus.Text = $"Update failed: {ex.Message}";
+            _sourceStatus.Text = "Source: unchanged";
+        }
+    }
+
+    static RateLimitRow? FindRateLimitRow(Snapshot snapshot, string window) =>
+        snapshot.RateLimitRows.FirstOrDefault(row => string.Equals(row.Window, window, StringComparison.OrdinalIgnoreCase));
+
+    static void SetLimitRow(LimitControls controls, RateLimitRow? row)
+    {
+        if (row is null)
+        {
+            controls.Remaining.Text = "--";
+            controls.Used.Text = "Used --";
+            controls.Reset.Text = "Resets unknown";
+            controls.Progress.Value = 0;
+            return;
+        }
+
+        var used = Math.Max(0.0, Math.Min(100.0, row.UsedPercent));
+        controls.Remaining.Text = FormatPercent(row.RemainingPercent);
+        controls.Used.Text = $"Used {FormatPercent(row.UsedPercent)}";
+        controls.Reset.Text = $"Resets {FormatResetTime(row.ResetsAt)}";
+        controls.Progress.Value = (int)Math.Round(used);
+    }
+
+    static string FormatPercent(double value) => value.ToString("N2", CultureInfo.CurrentCulture) + "%";
+
+    static string FormatResetTime(DateTime? value) =>
+        value is null ? "unknown" : value.Value.ToString("MMM d HH:mm", CultureInfo.CurrentCulture);
+
+    static string FormatUpdatedTimestamp(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "Updated: no rate-limit event yet";
+        }
+
+        return DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsed)
+            ? "Updated: " + parsed.ToString("MMM d HH:mm:ss", CultureInfo.CurrentCulture)
+            : "Updated: " + value;
+    }
+
+    static (string Text, string? ToolTip) FormatSampleSource(Snapshot snapshot)
+    {
+        var sourceFile = !string.IsNullOrWhiteSpace(snapshot.RateLimitSourceFile)
+            ? snapshot.RateLimitSourceFile
+            : snapshot.SourceFile;
+        var session = !string.IsNullOrWhiteSpace(snapshot.RateLimitSession)
+            ? snapshot.RateLimitSession
+            : snapshot.Session;
+
+        string sourceName;
+        if (!string.IsNullOrWhiteSpace(session))
+        {
+            sourceName = "session " + CompressText(session, 28);
+        }
+        else if (!string.IsNullOrWhiteSpace(sourceFile))
+        {
+            sourceName = "file " + CompressText(Path.GetFileName(sourceFile), 28);
+        }
+        else
+        {
+            sourceName = "unknown";
+        }
+
+        return ("Source: " + sourceName, sourceFile);
+    }
+
+    static string CompressText(string value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length <= maxLength)
+        {
+            return value;
+        }
+
+        if (maxLength < 8)
+        {
+            return value[..maxLength];
+        }
+
+        var side = Math.Max(2, (maxLength - 3) / 2);
+        return value[..side] + "..." + value[^side..];
+    }
+
+    sealed record LimitControls(Panel Panel, Label Remaining, Label Used, Label Reset, ProgressBar Progress);
 }
 
 sealed class DashboardServer

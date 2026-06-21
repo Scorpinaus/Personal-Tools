@@ -301,6 +301,30 @@ try {
         Assert-Equal 2 @($data.RateLimitRows).Count "Dashboard API should include rate-limit rows."
         Assert-True (@($data.TokenRows | Where-Object { $_.Scope -eq "Conversation total" -and $_.Total -eq 1500 }).Count -eq 1) "Dashboard API should include conversation totals."
 
+        $sessionFile = Join-Path $codexHome "sessions\smoke-session.jsonl"
+        $newUsage = New-TokenCountEvent `
+            -TimestampUtc ([DateTime]::UtcNow.AddMinutes(1)) `
+            -TotalUsage (New-Usage -Total 2200 -InputTokens 1500 -CachedInput 300 -Output 600 -Reasoning 100) `
+            -LastUsage (New-Usage -Total 700 -InputTokens 500 -CachedInput 100 -Output 180 -Reasoning 20) `
+            -RateLimits $null
+        Add-Content -LiteralPath $sessionFile -Value $newUsage -Encoding UTF8
+
+        $staleData = Invoke-RestMethod -UseBasicParsing -Uri $usageUrl -TimeoutSec 5
+        Assert-True (@($staleData.TokenRows | Where-Object { $_.Scope -eq "Conversation total" -and $_.Total -eq 1500 }).Count -eq 1) "Dashboard API should return cached usage while background refresh starts."
+
+        $freshData = $null
+        $deadline = (Get-Date).AddSeconds(20)
+        do {
+            Start-Sleep -Milliseconds 250
+            $candidate = Invoke-RestMethod -UseBasicParsing -Uri $usageUrl -TimeoutSec 5
+            if (@($candidate.TokenRows | Where-Object { $_.Scope -eq "Conversation total" -and $_.Total -eq 2200 }).Count -eq 1) {
+                $freshData = $candidate
+                break
+            }
+        } while ((Get-Date) -lt $deadline)
+
+        Assert-True ($null -ne $freshData) "Dashboard API should update cached usage after background refresh."
+
         $shutdown = Invoke-RestMethod -UseBasicParsing -Method Post -Uri $shutdownUrl -TimeoutSec 5
         Assert-Equal "stopping" $shutdown.status "Dashboard shutdown endpoint should acknowledge shutdown."
 

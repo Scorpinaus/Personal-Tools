@@ -1,6 +1,6 @@
 # Codex Usage Monitor (.NET)
 
-This folder contains the C#/.NET 8 conversion of the original PowerShell Codex usage monitor.
+This folder contains the C#/.NET 8 Windows conversion of the original PowerShell Codex usage monitor.
 
 ## Run
 
@@ -8,21 +8,27 @@ This folder contains the C#/.NET 8 conversion of the original PowerShell Codex u
 dotnet run -- -NoOpen -DashboardPort 8787
 ```
 
-Double-clicking the published exe starts the dashboard without opening a console window.
+Normal launch starts the dashboard and the floating Windows desktop limits widget. Double-clicking the published exe starts both without opening a console window. Use `-NoWidget` to suppress the widget, or `-Widget` to run only the widget.
 
-## Publish Self-Contained Exe
+## Publish Compact Exe
 
 ```powershell
 dotnet publish -c Release
 ```
 
-The published Windows x64 self-contained executable is written to:
+The published Windows x64 framework-dependent executable is written to:
 
 ```text
-bin\Release\net8.0\win-x64\publish\codex-usage-monitor.exe
+bin\Release\net8.0-windows\win-x64\publish\codex-usage-monitor.exe
 ```
 
-The app accepts the same main dashboard options as the PowerShell monitor, including `-CodexHome`, `-NoOpen`, `-DashboardPort`, `-IncludeArchived`, `-CostBasisMode`, `-PricingMode`, and rate-limit history options.
+This default publish is small, but requires the .NET 8 Windows Desktop Runtime on the machine that runs it. To publish a portable self-contained executable instead:
+
+```powershell
+dotnet publish -c Release --self-contained true -p:SelfContained=true -p:EnableCompressionInSingleFile=true
+```
+
+The app accepts the same main dashboard options as the PowerShell monitor, including `-CodexHome`, `-NoOpen`, `-NoWidget`, `-Widget`, `-WidgetRefreshSeconds`, `-DashboardPort`, `-IncludeArchived`, `-CostBasisMode`, `-PricingMode`, and rate-limit history options.
 
 ## SQLite Cache
 

@@ -16,6 +16,15 @@ net/bin/Release/net8.0/win-x64/publish/*
 !net/bin/Release/net8.0/win-x64/publish/codex-usage-monitor.exe
 !net/bin/Release/net8.0/win-x64/publish/dashboard/
 !net/bin/Release/net8.0/win-x64/publish/dashboard/**
+!net/bin/Release/net8.0-windows/
+net/bin/Release/net8.0-windows/*
+!net/bin/Release/net8.0-windows/win-x64/
+net/bin/Release/net8.0-windows/win-x64/*
+!net/bin/Release/net8.0-windows/win-x64/publish/
+net/bin/Release/net8.0-windows/win-x64/publish/*
+!net/bin/Release/net8.0-windows/win-x64/publish/codex-usage-monitor.exe
+!net/bin/Release/net8.0-windows/win-x64/publish/dashboard/
+!net/bin/Release/net8.0-windows/win-x64/publish/dashboard/**
 
 # .NET user/local files
 *.user

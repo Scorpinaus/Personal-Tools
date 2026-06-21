@@ -26,8 +26,11 @@ param(
     [switch]$LibraryOnly,
     [switch]$Console,
     [switch]$NoOpen,
+    [switch]$Widget,
+    [switch]$NoWidget,
     [switch]$DisableRateLimitHistory,
     [switch]$BackfillRateLimitHistory,
+    [int]$WidgetRefreshSeconds = 30,
     [int]$DashboardPort = 8787
 )
 
@@ -55,6 +58,7 @@ $monitorModules = @(
     "CodexMonitor.RateLimits.ps1"
     "CodexMonitor.Usage.ps1"
     "CodexMonitor.Snapshot.ps1"
+    "CodexMonitor.Widget.ps1"
     "CodexMonitor.Console.ps1"
 )
 
@@ -82,37 +86,80 @@ if ($BackfillRateLimitHistory) {
     }
 }
 
-if (-not $LibraryOnly -and -not $Console -and -not $Once) {
-    $dashboardScript = Join-Path $PSScriptRoot "codex_usage_dashboard.ps1"
-    if (-not (Test-Path -LiteralPath $dashboardScript)) {
-        throw "Dashboard script not found: $dashboardScript"
-    }
-
-    & $dashboardScript `
-        -CodexHome $CodexHome `
-        -MonitorScript $PSCommandPath `
-        -Port $DashboardPort `
+if ($Widget -and -not $LibraryOnly) {
+    Start-CodexUsageWidget `
+        -Root $CodexHome `
+        -Archived:$IncludeArchived `
         -MaxFiles $MaxFiles `
         -TailLines $TailLines `
         -ConversationLookbackHours $ConversationLookbackHours `
         -ConversationFallbackLookbackDays $ConversationFallbackLookbackDays `
         -ConversationFallbackMaxFiles $ConversationFallbackMaxFiles `
         -ConversationFallbackTailLines $ConversationFallbackTailLines `
-        -RollingMaxFiles $RollingMaxFiles `
-        -RollingTailLines $RollingTailLines `
-        -CostMaxFiles $CostMaxFiles `
-        -CostTailLines $CostTailLines `
-        -CostFiveHourRefreshSeconds $CostFiveHourRefreshSeconds `
-        -CostWeekRefreshSeconds $CostWeekRefreshSeconds `
-        -CostMonthRefreshSeconds $CostMonthRefreshSeconds `
-        -RateLimitHistoryDays $RateLimitHistoryDays `
-        -RateLimitHistorySampleSeconds $RateLimitHistorySampleSeconds `
-        -UsdToSgdRate $UsdToSgdRate `
-        -CostBasisMode $CostBasisMode `
-        -PricingMode $PricingMode `
-        -IncludeArchived:$IncludeArchived `
-        -NoOpen:$NoOpen `
-        -DisableRateLimitHistory:$DisableRateLimitHistory
+        -RefreshSeconds $WidgetRefreshSeconds
+    return
+}
+
+if (-not $LibraryOnly -and -not $Console -and -not $Once) {
+    $dashboardScript = Join-Path $PSScriptRoot "codex_usage_dashboard.ps1"
+    if (-not (Test-Path -LiteralPath $dashboardScript)) {
+        throw "Dashboard script not found: $dashboardScript"
+    }
+
+    $widgetProcess = $null
+    if (-not $NoWidget) {
+        $widgetProcess = Start-CodexUsageWidgetProcess `
+            -MonitorScript $PSCommandPath `
+            -CodexHome $CodexHome `
+            -MaxFiles $MaxFiles `
+            -TailLines $TailLines `
+            -ConversationLookbackHours $ConversationLookbackHours `
+            -ConversationFallbackLookbackDays $ConversationFallbackLookbackDays `
+            -ConversationFallbackMaxFiles $ConversationFallbackMaxFiles `
+            -ConversationFallbackTailLines $ConversationFallbackTailLines `
+            -RollingMaxFiles $RollingMaxFiles `
+            -RollingTailLines $RollingTailLines `
+            -CostMaxFiles $CostMaxFiles `
+            -CostTailLines $CostTailLines `
+            -WidgetRefreshSeconds $WidgetRefreshSeconds `
+            -UsdToSgdRate $UsdToSgdRate `
+            -CostBasisMode $CostBasisMode `
+            -PricingMode $PricingMode `
+            -IncludeArchived:$IncludeArchived
+    }
+
+    try {
+        & $dashboardScript `
+            -CodexHome $CodexHome `
+            -MonitorScript $PSCommandPath `
+            -Port $DashboardPort `
+            -MaxFiles $MaxFiles `
+            -TailLines $TailLines `
+            -ConversationLookbackHours $ConversationLookbackHours `
+            -ConversationFallbackLookbackDays $ConversationFallbackLookbackDays `
+            -ConversationFallbackMaxFiles $ConversationFallbackMaxFiles `
+            -ConversationFallbackTailLines $ConversationFallbackTailLines `
+            -RollingMaxFiles $RollingMaxFiles `
+            -RollingTailLines $RollingTailLines `
+            -CostMaxFiles $CostMaxFiles `
+            -CostTailLines $CostTailLines `
+            -CostFiveHourRefreshSeconds $CostFiveHourRefreshSeconds `
+            -CostWeekRefreshSeconds $CostWeekRefreshSeconds `
+            -CostMonthRefreshSeconds $CostMonthRefreshSeconds `
+            -RateLimitHistoryDays $RateLimitHistoryDays `
+            -RateLimitHistorySampleSeconds $RateLimitHistorySampleSeconds `
+            -UsdToSgdRate $UsdToSgdRate `
+            -CostBasisMode $CostBasisMode `
+            -PricingMode $PricingMode `
+            -IncludeArchived:$IncludeArchived `
+            -NoOpen:$NoOpen `
+            -DisableRateLimitHistory:$DisableRateLimitHistory
+    }
+    finally {
+        if ($null -ne $widgetProcess -and -not $widgetProcess.HasExited) {
+            Stop-Process -Id $widgetProcess.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
     return
 }
 
