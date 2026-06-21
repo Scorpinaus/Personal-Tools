@@ -4,7 +4,7 @@
     const number = new Intl.NumberFormat();
     const money = new Intl.NumberFormat(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
     const percent = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const activeTabs = { costs: "modelCosts", modelCostPeriod: "modelCostsOverall", noCompactionCostPeriod: "noCompactionCostsOverall", rateHistory: "historyFiveHour", conversation: "conversationOverview", conversationCostMode: "conversationNormalTurns" };
+    const activeTabs = { overview: "overviewSummary", costs: "modelCosts", modelCostPeriod: "modelCostsOverall", noCompactionCostPeriod: "noCompactionCostsOverall", rateHistory: "historyFiveHour", conversation: "conversationOverview", conversationCostMode: "conversationNormalTurns" };
     const stopMonitorButton = document.getElementById("stopMonitor");
     const turnPageSize = 10;
     let stopped = false;
@@ -844,6 +844,33 @@
       setConversationTab(activeTabs.conversation || "conversationOverview");
     }
 
+    function setOverviewTab(panelId, focusTab = false) {
+      const panel = document.getElementById(panelId);
+      if (!panel) return;
+      activeTabs.overview = panelId;
+
+      document.querySelectorAll(".overview-tab").forEach((item) => {
+        const selected = item.dataset.overviewTab === panelId;
+        item.classList.toggle("active", selected);
+        item.setAttribute("aria-selected", selected ? "true" : "false");
+        item.tabIndex = selected ? 0 : -1;
+        if (selected && focusTab) item.focus();
+      });
+
+      document.querySelectorAll(".overview-panel").forEach((item) => {
+        item.hidden = item.id !== panelId;
+        item.classList.toggle("active", item.id === panelId);
+      });
+    }
+
+    function moveOverviewTab(currentTab, direction) {
+      const tabs = Array.from(document.querySelectorAll(".overview-tab"));
+      const currentIndex = tabs.indexOf(currentTab);
+      if (currentIndex < 0 || tabs.length === 0) return;
+      const nextIndex = (currentIndex + direction + tabs.length) % tabs.length;
+      setOverviewTab(tabs[nextIndex].dataset.overviewTab, true);
+    }
+
     function activateTab(tab) {
       const tabId = tab.dataset.tab;
       if (!tabId || tab.disabled) return;
@@ -861,10 +888,8 @@
       });
     }
 
-    function initializeCollapsibleSections() {
-      document.querySelectorAll("details[data-collapse-key]").forEach((details) => {
-        details.open = false;
-      });
+    function initializeOverviewTabs() {
+      setOverviewTab(activeTabs.overview || "overviewSummary");
     }
 
     function showStatusMessage(message, kind) {
@@ -875,6 +900,12 @@
     }
 
     document.addEventListener("click", (event) => {
+      const overviewTab = event.target.closest(".overview-tab");
+      if (overviewTab) {
+        setOverviewTab(overviewTab.dataset.overviewTab);
+        return;
+      }
+
       const analyze = event.target.closest(".conversation-analyze");
       if (analyze) {
         selectedConversationKey = analyze.dataset.conversationKey || null;
@@ -894,6 +925,28 @@
       const tab = event.target.closest(".tab");
       if (!tab) return;
       activateTab(tab);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const overviewTab = event.target.closest(".overview-tab");
+      if (!overviewTab) return;
+
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        moveOverviewTab(overviewTab, 1);
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        moveOverviewTab(overviewTab, -1);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        const first = document.querySelector(".overview-tab");
+        if (first) setOverviewTab(first.dataset.overviewTab, true);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        const tabs = document.querySelectorAll(".overview-tab");
+        const last = tabs[tabs.length - 1];
+        if (last) setOverviewTab(last.dataset.overviewTab, true);
+      }
     });
 
     stopMonitorButton.addEventListener("click", async () => {
@@ -962,6 +1015,6 @@
       }
     }
 
-    initializeCollapsibleSections();
+    initializeOverviewTabs();
     load();
     refreshTimer = setInterval(load, refreshMs);

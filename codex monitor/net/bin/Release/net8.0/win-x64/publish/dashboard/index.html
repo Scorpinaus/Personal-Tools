@@ -27,32 +27,34 @@
   </header>
   <main>
     <div id="error" class="error"></div>
-    <div class="grid">
-      <section class="priority-section">
-        <h2>Rate Limits</h2>
-        <div id="rateLimits"></div>
-      </section>
-      <section class="priority-section">
-        <h2>Rolling Token Usage</h2>
-        <div id="rollingTokens"></div>
-      </section>
-    </div>
-    <section class="collapsible-section">
-      <details data-collapse-key="rateLimitHistory">
-        <summary class="section-summary">
-          <h2>Rate-Limit History</h2>
-        </summary>
+    <section class="overview-workspace" aria-label="Overview sections">
+      <div class="overview-tabs" role="tablist" aria-label="Overview sections">
+        <button class="overview-tab active" id="overviewTabSummary" type="button" role="tab" aria-selected="true" aria-controls="overviewSummary" data-overview-tab="overviewSummary">Summary</button>
+        <button class="overview-tab" id="overviewTabRateHistory" type="button" role="tab" aria-selected="false" aria-controls="overviewRateHistory" data-overview-tab="overviewRateHistory">Rate-Limit History</button>
+        <button class="overview-tab" id="overviewTabModelCosts" type="button" role="tab" aria-selected="false" aria-controls="overviewModelCosts" data-overview-tab="overviewModelCosts">Token Cost</button>
+        <button class="overview-tab" id="overviewTabConversation" type="button" role="tab" aria-selected="false" aria-controls="overviewConversation" data-overview-tab="overviewConversation">Conversation Usage</button>
+      </div>
+      <div class="overview-panel active" id="overviewSummary" role="tabpanel" aria-labelledby="overviewTabSummary">
+        <div class="grid">
+          <section class="priority-section">
+            <h2>Rate Limits</h2>
+            <div id="rateLimits"></div>
+          </section>
+          <section class="priority-section">
+            <h2>Rolling Token Usage</h2>
+            <div id="rollingTokens"></div>
+          </section>
+        </div>
+      </div>
+      <div class="overview-panel" id="overviewRateHistory" role="tabpanel" aria-labelledby="overviewTabRateHistory" hidden>
         <div class="section-body">
+          <h2>Rate-Limit History</h2>
           <div id="rateLimitHistory"></div>
         </div>
-      </details>
-    </section>
-    <section class="collapsible-section">
-      <details data-collapse-key="modelCostsSection">
-        <summary class="section-summary">
-          <h2>Estimated Token Cost By Model</h2>
-        </summary>
+      </div>
+      <div class="overview-panel" id="overviewModelCosts" role="tabpanel" aria-labelledby="overviewTabModelCosts" hidden>
         <div class="section-body">
+          <h2>Estimated Token Cost By Model</h2>
           <p class="source" id="costAssumptions">Cost basis: loading</p>
           <div class="tabs" role="tablist">
             <button class="tab active" type="button" data-tab-scope="costs" data-tab="modelCosts">By model</button>
@@ -67,14 +69,10 @@
             Source costs are local estimates allocated from the model/period totals.
           </p>
         </div>
-      </details>
-    </section>
-    <section class="collapsible-section">
-      <details data-collapse-key="conversationTokens">
-        <summary class="section-summary">
-          <h2>Conversation Token Usage</h2>
-        </summary>
+      </div>
+      <div class="overview-panel" id="overviewConversation" role="tabpanel" aria-labelledby="overviewTabConversation" hidden>
         <div class="section-body">
+          <h2>Conversation Token Usage</h2>
           <div class="tabs" role="tablist">
             <button class="tab active" type="button" data-tab-scope="conversation" data-tab="conversationOverview">Overview</button>
             <button class="tab tab-disabled" type="button" id="conversationAnalysisTab" data-tab-scope="conversation" data-tab="conversationAnalysis" disabled>Conversation Analysis</button>
@@ -85,7 +83,7 @@
             <p class="source" id="source"></p>
           </div>
         </div>
-      </details>
+      </div>
     </section>
   </main>
   <script src="/app.js"></script>
