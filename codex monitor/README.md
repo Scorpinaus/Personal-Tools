@@ -201,12 +201,20 @@ The suite creates temporary synthetic Codex session data and verifies library sn
 | `-PricingMode` | `Standard` | `Standard`, `Batch`, `Flex`, or `Priority`. |
 | `-UsdToSgdRate` | `1.274` | Exchange-rate multiplier used by the dashboard display. |
 
+### GPT-5.6 pricing
+
+The cost calculator supports `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` using the official OpenAI API and Codex credit rate cards. Standard, Batch, Flex, and Priority API modes are included where published, along with short- and long-context bands. Eligible GPT-5.6 usage switches to the long-context band at 270,000 input tokens, matching the existing no-compaction scenario behavior.
+
+GPT-5.6 API estimates also include cache-write charges when session telemetry exposes `cache_write_tokens`, `cacheWriteTokens`, `cache_creation_input_tokens`, or `cacheCreationInputTokens`. Older logs without one of these fields remain compatible and contribute zero cache-write tokens. Codex-credit estimates use the published input, cached-input, and output credit rates; the Codex rate card does not publish a separate cache-write credit rate.
+
+Pricing sources: [OpenAI API pricing](https://developers.openai.com/api/docs/pricing) and [Codex rate card](https://help.openai.com/en/articles/20001106-codex-rate-card-2).
+
 .NET-only cache options:
 
 | Option | Default | Notes |
 | --- | --- | --- |
 | `-DisableSqliteCache` | off | Read session files without using the SQLite index. |
-| `-RebuildCache` | off | Recreate the SQLite cache before reading. |
+| `-RebuildCache` | off | Recreate the SQLite cache before reading. Schema upgrades also rebuild the derived cache tables. |
 | `-CacheDbPath` | `codex_usage_monitor.sqlite` near the monitor | Override the SQLite cache file path. |
 | `-DashboardRoot` | app base `dashboard` folder | Override the static asset folder served by the .NET dashboard. |
 
@@ -235,7 +243,7 @@ codex_usage_monitor.sqlite                         # .NET SQLite cache
 %CODEX_HOME%\usage-history\rate_limit_samples.jsonl # rate-limit history samples
 ```
 
-The SQLite database and rate-limit samples are derived from Codex session data. They can be deleted and rebuilt if they become stale.
+The SQLite database and rate-limit samples are derived from Codex session data. They can be deleted and rebuilt if they become stale. SQLite schema v3 stores event timestamps as integer Unix milliseconds, keys event rows by `(session_file_id, event_index)`, and avoids repeating `session_id` in token/rate/source event tables. PowerShell SQLite support should follow that same derived-store contract.
 
 ## Development Notes
 

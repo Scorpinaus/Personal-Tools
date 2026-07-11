@@ -57,13 +57,15 @@ function New-Usage {
         [long]$InputTokens,
         [long]$CachedInput,
         [long]$Output,
-        [long]$Reasoning
+        [long]$Reasoning,
+        [long]$CacheWrite = 0
     )
 
     [ordered]@{
         total_tokens = $Total
         input_tokens = $InputTokens
         cached_input_tokens = $CachedInput
+        cache_write_tokens = $CacheWrite
         output_tokens = $Output
         reasoning_output_tokens = $Reasoning
     }
@@ -247,6 +249,36 @@ try {
         Reset-SessionFilesCache
         $freshListing = @(Get-SessionFiles -Root $cacheHome -Limit 0)
         Assert-Equal 2 $freshListing.Count "Reset session listing should see new files."
+    }
+
+    Invoke-Test "GPT-5.6 pricing supports variants, long context, credits, and cache writes" {
+        . $monitorScript -CodexHome $codexHome -LibraryOnly -NoOpen
+        $PricingMode = "Standard"
+        $CostBasisMode = "ApiUsdEstimate"
+
+        $sol = Get-ModelPricing -Model "gpt-5.6-sol" -PricingBand "Short"
+        $terraLong = Get-ModelPricing -Model "gpt-5.6-terra" -PricingBand "Long"
+        $luna = Get-ModelPricing -Model "gpt-5.6-luna" -PricingBand "Short"
+        Assert-Equal 6.25 ([double]$sol.CacheWritePerMillion) "Sol cache-write rate should match the API rate card."
+        Assert-Equal 22.5 ([double]$terraLong.OutputPerMillion) "Terra long-context output rate should match the API rate card."
+        Assert-Equal 6.0 ([double]$luna.OutputPerMillion) "Luna output rate should match the API rate card."
+        Assert-Equal "Long" (Get-PricingBand -Model "gpt-5.6-sol" -InputTokens 270000) "GPT-5.6 should switch to long-context pricing."
+
+        $bucket = New-TokenBucket -Window "Test" -Model "gpt-5.6-sol" -PricingBand "Short"
+        $bucket.Input = 1000000
+        $bucket.CachedInput = 200000
+        $bucket.CacheWrite = 100000
+        $bucket.Output = 100000
+        Set-EstimatedCost $bucket
+        Assert-Equal 7.725 ([double]$bucket.EstimatedCostUsd) "USD cost should include uncached, cached, cache-write, and output charges."
+
+        $CostBasisMode = "CodexCredits"
+        $creditBucket = New-TokenBucket -Window "Test" -Model "gpt-5.6-luna" -PricingBand "Short"
+        $creditBucket.Input = 1000000
+        $creditBucket.CachedInput = 200000
+        $creditBucket.Output = 100000
+        Set-EstimatedCost $creditBucket
+        Assert-Equal 35.5 ([double]$creditBucket.EstimatedCostCredits) "Luna Codex-credit calculation should use the official token rates."
     }
 
     Invoke-Test "public monitor entrypoint supports once console mode" {

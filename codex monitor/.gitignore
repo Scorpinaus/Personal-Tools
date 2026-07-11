@@ -35,6 +35,7 @@ net/bin/Release/net8.0-windows/win-x64/publish/*
 
 # Test and coverage outputs
 TestResults/
+.test-tmp/
 coverage/
 coverage.*
 *.coverage

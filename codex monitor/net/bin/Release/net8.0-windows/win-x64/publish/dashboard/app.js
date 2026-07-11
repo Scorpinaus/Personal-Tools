@@ -136,16 +136,35 @@
       return `${Math.floor(hours / 24)}d ago`;
     }
 
+    function latestRateLimitSample(meta) {
+      let latest = null;
+      for (const row of asArray(meta?.RateLimitHistoryRows)) {
+        const sampledAt = row?.SampledAt;
+        const sampledDate = parseTime(sampledAt);
+        if (!sampledDate) continue;
+        if (!latest || sampledDate > latest.date) {
+          latest = { value: sampledAt, date: sampledDate };
+        }
+      }
+      return latest;
+    }
+
     function renderRateLimitSource(meta) {
-      const sampledAt = meta?.RateLimitEventTimestamp || meta?.EventTimestamp;
+      const latestSample = latestRateLimitSample(meta);
+      const sampledAt = latestSample?.value || meta?.UpdatedAtLocal;
       if (!sampledAt) return "";
-      const sampledDate = parseTime(sampledAt);
+      const sampledDate = latestSample?.date || parseTime(sampledAt);
       const ageMinutes = sampledDate ? (Date.now() - sampledDate.getTime()) / 60000 : 0;
       const staleClass = ageMinutes >= 10 ? " stale" : "";
       const session = meta?.RateLimitSession || meta?.Session || "";
       const age = relativeAge(sampledAt);
+      const sourceAt = meta?.RateLimitEventTimestamp || meta?.EventTimestamp;
+      const sourceAge = sourceAt ? relativeAge(sourceAt) : "";
+      const sourceText = sourceAt
+        ? ` · source event ${fmtDate(sourceAt)}${sourceAge ? ` (${sourceAge})` : ""}`
+        : "";
       const suffix = session ? ` from ${session}` : "";
-      return `<p class="rate-limit-source${staleClass}">Sampled ${esc(fmtDate(sampledAt))}${age ? ` (${esc(age)})` : ""}${esc(suffix)}</p>`;
+      return `<p class="rate-limit-source${staleClass}">Sampled ${esc(fmtDate(sampledAt))}${age ? ` (${esc(age)})` : ""}${esc(sourceText)}${esc(suffix)}</p>`;
     }
 
     function renderRateLimits(data) {

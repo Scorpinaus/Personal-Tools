@@ -2,6 +2,12 @@
 
 function Get-ModelPricingTable {
     @(
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.6-sol"; ContextBand = "Short"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; CacheWritePerMillion = 6.25; OutputPerMillion = 30.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.6-sol"; ContextBand = "Long"; InputPerMillion = 10.00; CachedInputPerMillion = 1.00; CacheWritePerMillion = 12.50; OutputPerMillion = 45.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.6-terra"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; CacheWritePerMillion = 3.125; OutputPerMillion = 15.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.6-terra"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; CacheWritePerMillion = 6.25; OutputPerMillion = 22.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.6-luna"; ContextBand = "Short"; InputPerMillion = 1.00; CachedInputPerMillion = 0.10; CacheWritePerMillion = 1.25; OutputPerMillion = 6.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.6-luna"; ContextBand = "Long"; InputPerMillion = 2.00; CachedInputPerMillion = 0.20; CacheWritePerMillion = 2.50; OutputPerMillion = 9.00 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 30.00 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.5"; ContextBand = "Long"; InputPerMillion = 10.00; CachedInputPerMillion = 1.00; OutputPerMillion = 45.00 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 15.00 }
@@ -10,6 +16,12 @@ function Get-ModelPricingTable {
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.4-nano"; ContextBand = "Short"; InputPerMillion = 0.20; CachedInputPerMillion = 0.02; OutputPerMillion = 1.25 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Standard"; Model = "gpt-5.3-codex"; ContextBand = "Short"; InputPerMillion = 1.75; CachedInputPerMillion = 0.175; OutputPerMillion = 14.00 }
 
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.6-sol"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; CacheWritePerMillion = 3.125; OutputPerMillion = 15.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.6-sol"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; CacheWritePerMillion = 6.25; OutputPerMillion = 22.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.6-terra"; ContextBand = "Short"; InputPerMillion = 1.25; CachedInputPerMillion = 0.125; CacheWritePerMillion = 1.5625; OutputPerMillion = 7.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.6-terra"; ContextBand = "Long"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; CacheWritePerMillion = 3.125; OutputPerMillion = 11.25 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.6-luna"; ContextBand = "Short"; InputPerMillion = 0.50; CachedInputPerMillion = 0.05; CacheWritePerMillion = 0.625; OutputPerMillion = 3.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.6-luna"; ContextBand = "Long"; InputPerMillion = 1.00; CachedInputPerMillion = 0.10; CacheWritePerMillion = 1.25; OutputPerMillion = 4.50 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 15.00 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.5"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 22.50 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 1.25; CachedInputPerMillion = 0.125; OutputPerMillion = 7.50 }
@@ -17,6 +29,12 @@ function Get-ModelPricingTable {
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 0.375; CachedInputPerMillion = 0.0375; OutputPerMillion = 2.25 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Batch"; Model = "gpt-5.4-nano"; ContextBand = "Short"; InputPerMillion = 0.10; CachedInputPerMillion = 0.01; OutputPerMillion = 0.625 }
 
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.6-sol"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; CacheWritePerMillion = 3.125; OutputPerMillion = 15.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.6-sol"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; CacheWritePerMillion = 6.25; OutputPerMillion = 22.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.6-terra"; ContextBand = "Short"; InputPerMillion = 1.25; CachedInputPerMillion = 0.125; CacheWritePerMillion = 1.5625; OutputPerMillion = 7.50 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.6-terra"; ContextBand = "Long"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; CacheWritePerMillion = 3.125; OutputPerMillion = 11.25 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.6-luna"; ContextBand = "Short"; InputPerMillion = 0.50; CachedInputPerMillion = 0.05; CacheWritePerMillion = 0.625; OutputPerMillion = 3.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.6-luna"; ContextBand = "Long"; InputPerMillion = 1.00; CachedInputPerMillion = 0.10; CacheWritePerMillion = 1.25; OutputPerMillion = 4.50 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 2.50; CachedInputPerMillion = 0.25; OutputPerMillion = 15.00 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.5"; ContextBand = "Long"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 22.50 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 1.25; CachedInputPerMillion = 0.125; OutputPerMillion = 7.50 }
@@ -24,11 +42,17 @@ function Get-ModelPricingTable {
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 0.375; CachedInputPerMillion = 0.0375; OutputPerMillion = 2.25 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Flex"; Model = "gpt-5.4-nano"; ContextBand = "Short"; InputPerMillion = 0.10; CachedInputPerMillion = 0.01; OutputPerMillion = 0.625 }
 
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.6-sol"; ContextBand = "Short"; InputPerMillion = 10.00; CachedInputPerMillion = 1.00; CacheWritePerMillion = 12.50; OutputPerMillion = 60.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.6-terra"; ContextBand = "Short"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; CacheWritePerMillion = 6.25; OutputPerMillion = 30.00 }
+        [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.6-luna"; ContextBand = "Short"; InputPerMillion = 2.00; CachedInputPerMillion = 0.20; CacheWritePerMillion = 2.50; OutputPerMillion = 12.00 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 12.50; CachedInputPerMillion = 1.25; OutputPerMillion = 75.00 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 5.00; CachedInputPerMillion = 0.50; OutputPerMillion = 30.00 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 1.50; CachedInputPerMillion = 0.15; OutputPerMillion = 9.00 }
         [pscustomobject]@{ Basis = "ApiUsdEstimate"; Unit = "USD"; Mode = "Priority"; Model = "gpt-5.3-codex"; ContextBand = "Short"; InputPerMillion = 3.50; CachedInputPerMillion = 0.35; OutputPerMillion = 28.00 }
 
+        [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.6-sol"; ContextBand = "Short"; InputPerMillion = 125.00; CachedInputPerMillion = 12.50; CacheWritePerMillion = 0.00; OutputPerMillion = 750.00 }
+        [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.6-terra"; ContextBand = "Short"; InputPerMillion = 62.50; CachedInputPerMillion = 6.25; CacheWritePerMillion = 0.00; OutputPerMillion = 375.00 }
+        [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.6-luna"; ContextBand = "Short"; InputPerMillion = 25.00; CachedInputPerMillion = 2.50; CacheWritePerMillion = 0.00; OutputPerMillion = 150.00 }
         [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.5"; ContextBand = "Short"; InputPerMillion = 125.00; CachedInputPerMillion = 12.50; OutputPerMillion = 750.00 }
         [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.4"; ContextBand = "Short"; InputPerMillion = 62.50; CachedInputPerMillion = 6.25; OutputPerMillion = 375.00 }
         [pscustomobject]@{ Basis = "CodexCredits"; Unit = "credits"; Mode = "Standard"; Model = "gpt-5.4-mini"; ContextBand = "Short"; InputPerMillion = 18.75; CachedInputPerMillion = 1.875; OutputPerMillion = 113.00 }
@@ -43,7 +67,7 @@ function Get-PricingBand {
         [long]$InputTokens
     )
 
-    if ($Model -notin @("gpt-5.5", "gpt-5.4")) {
+    if ($Model -notin @("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4")) {
         return "Short"
     }
 
@@ -170,10 +194,13 @@ function Set-EstimatedCost {
     $Bucket.CostUnit = $pricing.Unit
 
     $cachedInput = [Math]::Max(0L, [long]$Bucket.CachedInput)
+    $cacheWrite = if ($null -ne $Bucket.PSObject.Properties["CacheWrite"]) { [Math]::Max(0L, [long]$Bucket.CacheWrite) } else { 0L }
     $uncachedInput = [Math]::Max(0L, [long]$Bucket.Input - $cachedInput)
+    $cacheWriteRate = if ($null -ne $pricing.PSObject.Properties["CacheWritePerMillion"]) { [double]$pricing.CacheWritePerMillion } else { 0.0 }
     $cost =
         ($uncachedInput * [double]$pricing.InputPerMillion / 1000000.0) +
         ($cachedInput * [double]$pricing.CachedInputPerMillion / 1000000.0) +
+        ($cacheWrite * $cacheWriteRate / 1000000.0) +
         ([long]$Bucket.Output * [double]$pricing.OutputPerMillion / 1000000.0)
 
     $roundedCost = [Math]::Round($cost, 4)
@@ -204,10 +231,13 @@ function Set-NoCompactionEstimatedCost {
     }
 
     $cachedInput = [Math]::Max(0L, [long]$Bucket.CachedInput)
+    $cacheWrite = if ($null -ne $Bucket.PSObject.Properties["CacheWrite"]) { [Math]::Max(0L, [long]$Bucket.CacheWrite) } else { 0L }
     $uncachedInput = [Math]::Max(0L, [long]$Bucket.Input - $cachedInput)
+    $cacheWriteRate = if ($null -ne $pricing.PSObject.Properties["CacheWritePerMillion"]) { [double]$pricing.CacheWritePerMillion } else { 0.0 }
     $cost =
         ($uncachedInput * [double]$pricing.InputPerMillion / 1000000.0) +
         ($cachedInput * [double]$pricing.CachedInputPerMillion / 1000000.0) +
+        ($cacheWrite * $cacheWriteRate / 1000000.0) +
         ([long]$Bucket.Output * [double]$pricing.OutputPerMillion / 1000000.0)
 
     $roundedCost = [Math]::Round($cost, 4)

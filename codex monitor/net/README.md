@@ -38,7 +38,7 @@ The .NET monitor stores parsed token usage deltas, rate-limit observations, and 
 codex_usage_monitor.sqlite
 ```
 
-By default, the cache is placed in the monitor folder when the source tree/start scripts are present; otherwise it is placed beside the executable. The cache is derived data and can be rebuilt from Codex session JSONL files. The current schema uses `session_files`, `token_events`, `rate_limit_events`, and `source_estimate_events`.
+By default, the cache is placed in the monitor folder when the source tree/start scripts are present; otherwise it is placed beside the executable. The cache is derived data and can be rebuilt from Codex session JSONL files. The current schema uses `session_files`, `token_events`, `rate_limit_events`, and `source_estimate_events`. Schema v3 stores event timestamps as Unix millisecond integers, references sessions through `session_file_id`, and uses compact composite event keys.
 
 Useful options:
 

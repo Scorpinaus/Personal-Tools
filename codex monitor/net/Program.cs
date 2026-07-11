@@ -576,6 +576,7 @@ sealed class UsageMonitor
             Total = JsonTools.GetNullableLong(usage, "total_tokens", "totalTokens"),
             Input = inputTokens,
             CachedInput = cachedInputTokens,
+            CacheWrite = JsonTools.GetNullableLong(usage, "cache_write_tokens", "cacheWriteTokens", "cache_creation_input_tokens", "cacheCreationInputTokens"),
             CacheHitRatioPercent = GetCacheHitRatioPercent(inputTokens, cachedInputTokens),
             Output = JsonTools.GetNullableLong(usage, "output_tokens", "outputTokens"),
             Reasoning = JsonTools.GetNullableLong(usage, "reasoning_output_tokens", "reasoningOutputTokens")
@@ -636,6 +637,7 @@ sealed class UsageMonitor
                 cost = Math.Round(
                     turn.NonCachedInput * pricing.InputPerMillion / 1_000_000.0 +
                     turn.CachedInput * pricing.CachedInputPerMillion / 1_000_000.0 +
+                    turn.CacheWrite * pricing.CacheWritePerMillion / 1_000_000.0 +
                     turn.Output * pricing.OutputPerMillion / 1_000_000.0,
                     4);
             }
@@ -652,6 +654,7 @@ sealed class UsageMonitor
                 Total = turn.Total,
                 Input = turn.Input,
                 CachedInput = turn.CachedInput,
+                CacheWrite = turn.CacheWrite,
                 CacheHitRatioPercent = turn.CacheHitRatioPercent,
                 NonCachedInput = turn.NonCachedInput,
                 Output = turn.Output,
@@ -693,6 +696,7 @@ sealed class UsageMonitor
                 Total = metrics.Total,
                 Input = metrics.Input,
                 CachedInput = metrics.CachedInput,
+                CacheWrite = metrics.CacheWrite,
                 CacheHitRatioPercent = GetCacheHitRatioPercent(metrics.Input, metrics.CachedInput),
                 NonCachedInput = Math.Max(0, metrics.Input - metrics.CachedInput),
                 Output = metrics.Output,
@@ -1648,6 +1652,7 @@ sealed class UsageMonitor
         bucket.Total += metrics.Total;
         bucket.Input += metrics.Input;
         bucket.CachedInput += metrics.CachedInput;
+        bucket.CacheWrite += metrics.CacheWrite;
         bucket.Output += metrics.Output;
         bucket.Reasoning += metrics.Reasoning;
         bucket.Events++;
@@ -1684,6 +1689,7 @@ sealed class UsageMonitor
         var cost = Math.Round(
             uncachedInput * pricing.InputPerMillion / 1_000_000.0 +
             bucket.CachedInput * pricing.CachedInputPerMillion / 1_000_000.0 +
+            bucket.CacheWrite * pricing.CacheWritePerMillion / 1_000_000.0 +
             bucket.Output * pricing.OutputPerMillion / 1_000_000.0,
             4);
         bucket.CostUnit = pricing.Unit;
@@ -1713,6 +1719,7 @@ sealed class UsageMonitor
         var cost = Math.Round(
             uncachedInput * pricing.InputPerMillion / 1_000_000.0 +
             bucket.CachedInput * pricing.CachedInputPerMillion / 1_000_000.0 +
+            bucket.CacheWrite * pricing.CacheWritePerMillion / 1_000_000.0 +
             bucket.Output * pricing.OutputPerMillion / 1_000_000.0,
             4);
         bucket.CostUnit = pricing.Unit;
@@ -1768,7 +1775,10 @@ sealed class UsageMonitor
         return pricing;
     }
 
-    static string GetPricingBand(string? model, long inputTokens) => model is "gpt-5.5" or "gpt-5.4" && inputTokens >= LongContextThresholdTokens ? "Long" : "Short";
+    static string GetPricingBand(string? model, long inputTokens) =>
+        (model is "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna" or "gpt-5.5" or "gpt-5.4") && inputTokens >= LongContextThresholdTokens
+            ? "Long"
+            : "Short";
 
     string GetNoCompactionPricingBand(string? model, long cumulativeInputTokens)
     {
@@ -1784,6 +1794,12 @@ sealed class UsageMonitor
 
     static IReadOnlyList<PricingRecord> PricingTable() =>
     [
+        new("ApiUsdEstimate", "USD", "Standard", "gpt-5.6-sol", "Short", 5.00, 0.50, 30.00, 6.25),
+        new("ApiUsdEstimate", "USD", "Standard", "gpt-5.6-sol", "Long", 10.00, 1.00, 45.00, 12.50),
+        new("ApiUsdEstimate", "USD", "Standard", "gpt-5.6-terra", "Short", 2.50, 0.25, 15.00, 3.125),
+        new("ApiUsdEstimate", "USD", "Standard", "gpt-5.6-terra", "Long", 5.00, 0.50, 22.50, 6.25),
+        new("ApiUsdEstimate", "USD", "Standard", "gpt-5.6-luna", "Short", 1.00, 0.10, 6.00, 1.25),
+        new("ApiUsdEstimate", "USD", "Standard", "gpt-5.6-luna", "Long", 2.00, 0.20, 9.00, 2.50),
         new("ApiUsdEstimate", "USD", "Standard", "gpt-5.5", "Short", 5.00, 0.50, 30.00),
         new("ApiUsdEstimate", "USD", "Standard", "gpt-5.5", "Long", 10.00, 1.00, 45.00),
         new("ApiUsdEstimate", "USD", "Standard", "gpt-5.4", "Short", 2.50, 0.25, 15.00),
@@ -1791,22 +1807,40 @@ sealed class UsageMonitor
         new("ApiUsdEstimate", "USD", "Standard", "gpt-5.4-mini", "Short", 0.75, 0.075, 4.50),
         new("ApiUsdEstimate", "USD", "Standard", "gpt-5.4-nano", "Short", 0.20, 0.02, 1.25),
         new("ApiUsdEstimate", "USD", "Standard", "gpt-5.3-codex", "Short", 1.75, 0.175, 14.00),
+        new("ApiUsdEstimate", "USD", "Batch", "gpt-5.6-sol", "Short", 2.50, 0.25, 15.00, 3.125),
+        new("ApiUsdEstimate", "USD", "Batch", "gpt-5.6-sol", "Long", 5.00, 0.50, 22.50, 6.25),
+        new("ApiUsdEstimate", "USD", "Batch", "gpt-5.6-terra", "Short", 1.25, 0.125, 7.50, 1.5625),
+        new("ApiUsdEstimate", "USD", "Batch", "gpt-5.6-terra", "Long", 2.50, 0.25, 11.25, 3.125),
+        new("ApiUsdEstimate", "USD", "Batch", "gpt-5.6-luna", "Short", 0.50, 0.05, 3.00, 0.625),
+        new("ApiUsdEstimate", "USD", "Batch", "gpt-5.6-luna", "Long", 1.00, 0.10, 4.50, 1.25),
         new("ApiUsdEstimate", "USD", "Batch", "gpt-5.5", "Short", 2.50, 0.25, 15.00),
         new("ApiUsdEstimate", "USD", "Batch", "gpt-5.5", "Long", 5.00, 0.50, 22.50),
         new("ApiUsdEstimate", "USD", "Batch", "gpt-5.4", "Short", 1.25, 0.125, 7.50),
         new("ApiUsdEstimate", "USD", "Batch", "gpt-5.4", "Long", 2.50, 0.25, 11.25),
         new("ApiUsdEstimate", "USD", "Batch", "gpt-5.4-mini", "Short", 0.375, 0.0375, 2.25),
         new("ApiUsdEstimate", "USD", "Batch", "gpt-5.4-nano", "Short", 0.10, 0.01, 0.625),
+        new("ApiUsdEstimate", "USD", "Flex", "gpt-5.6-sol", "Short", 2.50, 0.25, 15.00, 3.125),
+        new("ApiUsdEstimate", "USD", "Flex", "gpt-5.6-sol", "Long", 5.00, 0.50, 22.50, 6.25),
+        new("ApiUsdEstimate", "USD", "Flex", "gpt-5.6-terra", "Short", 1.25, 0.125, 7.50, 1.5625),
+        new("ApiUsdEstimate", "USD", "Flex", "gpt-5.6-terra", "Long", 2.50, 0.25, 11.25, 3.125),
+        new("ApiUsdEstimate", "USD", "Flex", "gpt-5.6-luna", "Short", 0.50, 0.05, 3.00, 0.625),
+        new("ApiUsdEstimate", "USD", "Flex", "gpt-5.6-luna", "Long", 1.00, 0.10, 4.50, 1.25),
         new("ApiUsdEstimate", "USD", "Flex", "gpt-5.5", "Short", 2.50, 0.25, 15.00),
         new("ApiUsdEstimate", "USD", "Flex", "gpt-5.5", "Long", 5.00, 0.50, 22.50),
         new("ApiUsdEstimate", "USD", "Flex", "gpt-5.4", "Short", 1.25, 0.125, 7.50),
         new("ApiUsdEstimate", "USD", "Flex", "gpt-5.4", "Long", 2.50, 0.25, 11.25),
         new("ApiUsdEstimate", "USD", "Flex", "gpt-5.4-mini", "Short", 0.375, 0.0375, 2.25),
         new("ApiUsdEstimate", "USD", "Flex", "gpt-5.4-nano", "Short", 0.10, 0.01, 0.625),
+        new("ApiUsdEstimate", "USD", "Priority", "gpt-5.6-sol", "Short", 10.00, 1.00, 60.00, 12.50),
+        new("ApiUsdEstimate", "USD", "Priority", "gpt-5.6-terra", "Short", 5.00, 0.50, 30.00, 6.25),
+        new("ApiUsdEstimate", "USD", "Priority", "gpt-5.6-luna", "Short", 2.00, 0.20, 12.00, 2.50),
         new("ApiUsdEstimate", "USD", "Priority", "gpt-5.5", "Short", 12.50, 1.25, 75.00),
         new("ApiUsdEstimate", "USD", "Priority", "gpt-5.4", "Short", 5.00, 0.50, 30.00),
         new("ApiUsdEstimate", "USD", "Priority", "gpt-5.4-mini", "Short", 1.50, 0.15, 9.00),
         new("ApiUsdEstimate", "USD", "Priority", "gpt-5.3-codex", "Short", 3.50, 0.35, 28.00),
+        new("CodexCredits", "credits", "Standard", "gpt-5.6-sol", "Short", 125.00, 12.50, 750.00),
+        new("CodexCredits", "credits", "Standard", "gpt-5.6-terra", "Short", 62.50, 6.25, 375.00),
+        new("CodexCredits", "credits", "Standard", "gpt-5.6-luna", "Short", 25.00, 2.50, 150.00),
         new("CodexCredits", "credits", "Standard", "gpt-5.5", "Short", 125.00, 12.50, 750.00),
         new("CodexCredits", "credits", "Standard", "gpt-5.4", "Short", 62.50, 6.25, 375.00),
         new("CodexCredits", "credits", "Standard", "gpt-5.4-mini", "Short", 18.75, 1.875, 113.00),
@@ -1986,6 +2020,7 @@ sealed class UsageMonitor
         JsonTools.GetLong(usage, "total_tokens", "totalTokens") ?? 0,
         JsonTools.GetLong(usage, "input_tokens", "inputTokens") ?? 0,
         JsonTools.GetLong(usage, "cached_input_tokens", "cachedInputTokens") ?? 0,
+        JsonTools.GetLong(usage, "cache_write_tokens", "cacheWriteTokens", "cache_creation_input_tokens", "cacheCreationInputTokens") ?? 0,
         JsonTools.GetLong(usage, "output_tokens", "outputTokens") ?? 0,
         JsonTools.GetLong(usage, "reasoning_output_tokens", "reasoningOutputTokens") ?? 0);
 
@@ -2005,14 +2040,15 @@ sealed class UsageMonitor
             current.Total - previous.Total,
             current.Input - previous.Input,
             current.CachedInput - previous.CachedInput,
+            current.CacheWrite - previous.CacheWrite,
             current.Output - previous.Output,
             current.Reasoning - previous.Reasoning);
-        return delta.Total < 0 || delta.Input < 0 || delta.CachedInput < 0 || delta.Output < 0 || delta.Reasoning < 0 || !AnyMetrics(delta) ? null : delta;
+        return delta.Total < 0 || delta.Input < 0 || delta.CachedInput < 0 || delta.CacheWrite < 0 || delta.Output < 0 || delta.Reasoning < 0 || !AnyMetrics(delta) ? null : delta;
     }
 
-    static bool AnyMetrics(UsageMetrics? m) => m is not null && (m.Total != 0 || m.Input != 0 || m.CachedInput != 0 || m.Output != 0 || m.Reasoning != 0);
+    static bool AnyMetrics(UsageMetrics? m) => m is not null && (m.Total != 0 || m.Input != 0 || m.CachedInput != 0 || m.CacheWrite != 0 || m.Output != 0 || m.Reasoning != 0);
     static bool SameMetrics(UsageMetrics? left, UsageMetrics? right) => left is not null && right is not null && left.Equals(right);
-    static string MetricsKey(UsageMetrics? m) => m is null ? "null" : $"{m.Total}/{m.Input}/{m.CachedInput}/{m.Output}/{m.Reasoning}";
+    static string MetricsKey(UsageMetrics? m) => m is null ? "null" : $"{m.Total}/{m.Input}/{m.CachedInput}/{m.CacheWrite}/{m.Output}/{m.Reasoning}";
 
     string GetRateLimitHistoryPath() => Path.Combine(_options.CodexHome, "usage-history", "rate_limit_samples.jsonl");
 
@@ -2270,7 +2306,7 @@ sealed class UsageMonitor
 
 sealed class SqliteUsageCache
 {
-    const int SchemaVersion = 2;
+    const int SchemaVersion = 4;
 
     readonly string _path;
     readonly object _gate = new();
@@ -2294,14 +2330,16 @@ sealed class SqliteUsageCache
             using var connection = OpenConnection();
             ExecuteNonQuery(connection, null, "PRAGMA journal_mode=WAL;");
             ExecuteNonQuery(connection, null, "PRAGMA foreign_keys=ON;");
-            EnsureSchema(connection);
+            EnsureSchemaMeta(connection);
 
             var version = GetSchemaVersion(connection);
-            if (version is not null && version != SchemaVersion)
+            if (version != SchemaVersion && (version is not null || HasCacheTables(connection)))
             {
-                ClearData(connection);
+                DropCacheTables(connection);
+                ExecuteNonQuery(connection, null, "VACUUM;");
             }
 
+            EnsureSchema(connection);
             SetSchemaVersion(connection);
             if (rebuild)
             {
@@ -2353,9 +2391,9 @@ sealed class SqliteUsageCache
                     DeleteIndexedEvents(connection, transaction, sessionFileId);
 
                     var parsed = parseFile(path);
-                    InsertTokenEvents(connection, transaction, sessionFileId, sessionId, parsed.Events);
-                    InsertRateLimitEvents(connection, transaction, sessionFileId, sessionId, parsed.RateLimitEvents);
-                    InsertSourceEstimateEvents(connection, transaction, sessionFileId, sessionId, parsed.SourceEstimateEvents);
+                    InsertTokenEvents(connection, transaction, sessionFileId, parsed.Events);
+                    InsertRateLimitEvents(connection, transaction, sessionFileId, parsed.RateLimitEvents);
+                    InsertSourceEstimateEvents(connection, transaction, sessionFileId, parsed.SourceEstimateEvents);
                     UpdateIndexedFile(connection, transaction, sessionFileId, size, lastWriteUtc, parsed.LineCount, parsed.LastEventUtc);
                 }
                 catch (Exception ex)
@@ -2397,8 +2435,8 @@ sealed class SqliteUsageCache
                 stateReader.Close();
 
                 using var command = CreateCommand(connection, null, """
-                    SELECT event_index, event_utc, model, total_tokens, input_tokens, cached_input_tokens,
-                           output_tokens, reasoning_tokens, cumulative_input_tokens
+                    SELECT event_index, event_utc_ms, model, total_tokens, input_tokens, cached_input_tokens,
+                           cache_write_tokens, output_tokens, reasoning_tokens, cumulative_input_tokens
                     FROM token_events
                     WHERE session_file_id = $session_file_id
                     ORDER BY event_index;
@@ -2407,14 +2445,15 @@ sealed class SqliteUsageCache
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    var timestamp = ParseUtc(reader.GetString(1)) ?? DateTime.MinValue;
+                    var timestamp = FromUnixTimeMilliseconds(reader.GetInt64(1));
                     var metrics = new UsageMetrics(
                         reader.GetInt64(3),
                         reader.GetInt64(4),
                         reader.GetInt64(5),
                         reader.GetInt64(6),
-                        reader.GetInt64(7));
-                    rows.Add(new UsageDeltaEvent(timestamp, reader.GetString(2), metrics, reader.GetInt32(0), reader.GetInt64(8)));
+                        reader.GetInt64(7),
+                        reader.GetInt64(8));
+                    rows.Add(new UsageDeltaEvent(timestamp, reader.GetString(2), metrics, reader.GetInt32(0), reader.GetInt64(9)));
                 }
 
                 return true;
@@ -2450,28 +2489,24 @@ sealed class SqliteUsageCache
                     }
 
                     using var command = CreateCommand(connection, null, """
-                        SELECT event_utc, source_timestamp, plan_type, window_name, used_percent,
+                        SELECT event_utc_ms, source_timestamp_ms, plan_type, window_name, used_percent,
                                remaining_percent, window_minutes, resets_at_local
                         FROM rate_limit_events
                         WHERE session_file_id = $session_file_id
-                          AND event_utc >= $cutoff_utc
-                        ORDER BY event_utc, window_name;
+                          AND event_utc_ms >= $cutoff_utc_ms
+                        ORDER BY event_utc_ms, window_name;
                         """);
                     command.Parameters.AddWithValue("$session_file_id", state.Id);
-                    command.Parameters.AddWithValue("$cutoff_utc", cutoffUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
+                    command.Parameters.AddWithValue("$cutoff_utc_ms", ToUnixTimeMilliseconds(cutoffUtc));
                     using var reader = command.ExecuteReader();
                     while (reader.Read())
                     {
-                        var sampledAt = ParseUtc(reader.GetString(0));
-                        if (sampledAt is null)
-                        {
-                            continue;
-                        }
+                        var sampledAt = FromUnixTimeMilliseconds(reader.GetInt64(0));
 
                         rows.Add(new RateLimitHistoryRow
                         {
-                            SampledAt = sampledAt.Value,
-                            EventTimestamp = GetNullableString(reader, 1),
+                            SampledAt = sampledAt,
+                            EventTimestamp = reader.IsDBNull(1) ? null : FormatIsoUtcMilliseconds(reader.GetInt64(1)),
                             PlanType = GetNullableString(reader, 2),
                             Window = reader.GetString(3),
                             UsedPercent = reader.GetDouble(4),
@@ -2519,21 +2554,17 @@ sealed class SqliteUsageCache
                     }
 
                     using var command = CreateCommand(connection, null, """
-                        SELECT event_utc, model, source, side, estimated_tokens, estimated_chars, attribution
+                        SELECT event_utc_ms, model, source, side, estimated_tokens, estimated_chars, attribution
                         FROM source_estimate_events
                         WHERE session_file_id = $session_file_id
-                          AND event_utc >= $oldest_start_utc;
+                          AND event_utc_ms >= $oldest_start_utc_ms;
                         """);
                     command.Parameters.AddWithValue("$session_file_id", state.Id);
-                    command.Parameters.AddWithValue("$oldest_start_utc", oldestStartUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
+                    command.Parameters.AddWithValue("$oldest_start_utc_ms", ToUnixTimeMilliseconds(oldestStartUtc));
                     using var reader = command.ExecuteReader();
                     while (reader.Read())
                     {
-                        var eventTime = ParseUtc(reader.GetString(0));
-                        if (eventTime is null)
-                        {
-                            continue;
-                        }
+                        var eventTime = FromUnixTimeMilliseconds(reader.GetInt64(0));
 
                         var model = reader.GetString(1);
                         var estimate = new SourceEstimate(
@@ -2543,7 +2574,7 @@ sealed class SqliteUsageCache
                             reader.GetInt64(5),
                             reader.GetString(6));
 
-                        foreach (var window in windows.Where(w => eventTime.Value >= w.StartUtc))
+                        foreach (var window in windows.Where(w => eventTime >= w.StartUtc))
                         {
                             AddSourceEstimateBucket(buckets, window.Name, model, estimate);
                         }
@@ -2591,7 +2622,7 @@ sealed class SqliteUsageCache
         return connection;
     }
 
-    static void EnsureSchema(SqliteConnection connection)
+    static void EnsureSchemaMeta(SqliteConnection connection)
     {
         ExecuteNonQuery(connection, null, """
             CREATE TABLE IF NOT EXISTS schema_meta (
@@ -2599,6 +2630,11 @@ sealed class SqliteUsageCache
               value TEXT NOT NULL
             );
             """);
+    }
+
+    static void EnsureSchema(SqliteConnection connection)
+    {
+        EnsureSchemaMeta(connection);
 
         ExecuteNonQuery(connection, null, """
             CREATE TABLE IF NOT EXISTS session_files (
@@ -2618,31 +2654,28 @@ sealed class SqliteUsageCache
 
         ExecuteNonQuery(connection, null, """
             CREATE TABLE IF NOT EXISTS token_events (
-              id INTEGER PRIMARY KEY,
               session_file_id INTEGER NOT NULL,
-              session_id TEXT NOT NULL,
               event_index INTEGER NOT NULL,
-              event_utc TEXT NOT NULL,
+              event_utc_ms INTEGER NOT NULL,
               model TEXT NOT NULL,
               total_tokens INTEGER NOT NULL,
               input_tokens INTEGER NOT NULL,
               cached_input_tokens INTEGER NOT NULL,
+              cache_write_tokens INTEGER NOT NULL DEFAULT 0,
               output_tokens INTEGER NOT NULL,
               reasoning_tokens INTEGER NOT NULL,
               cumulative_input_tokens INTEGER NOT NULL DEFAULT 0,
               FOREIGN KEY(session_file_id) REFERENCES session_files(id) ON DELETE CASCADE,
-              UNIQUE(session_file_id, event_index)
-            );
+              PRIMARY KEY(session_file_id, event_index)
+            ) WITHOUT ROWID;
             """);
 
         ExecuteNonQuery(connection, null, """
             CREATE TABLE IF NOT EXISTS rate_limit_events (
-              id INTEGER PRIMARY KEY,
               session_file_id INTEGER NOT NULL,
-              session_id TEXT NOT NULL,
               event_index INTEGER NOT NULL,
-              event_utc TEXT NOT NULL,
-              source_timestamp TEXT,
+              event_utc_ms INTEGER NOT NULL,
+              source_timestamp_ms INTEGER,
               plan_type TEXT,
               window_name TEXT NOT NULL,
               used_percent REAL NOT NULL,
@@ -2650,17 +2683,15 @@ sealed class SqliteUsageCache
               window_minutes REAL,
               resets_at_local TEXT,
               FOREIGN KEY(session_file_id) REFERENCES session_files(id) ON DELETE CASCADE,
-              UNIQUE(session_file_id, event_index, window_name)
-            );
+              PRIMARY KEY(session_file_id, event_index, window_name)
+            ) WITHOUT ROWID;
             """);
 
         ExecuteNonQuery(connection, null, """
             CREATE TABLE IF NOT EXISTS source_estimate_events (
-              id INTEGER PRIMARY KEY,
               session_file_id INTEGER NOT NULL,
-              session_id TEXT NOT NULL,
               event_index INTEGER NOT NULL,
-              event_utc TEXT NOT NULL,
+              event_utc_ms INTEGER NOT NULL,
               model TEXT NOT NULL,
               source TEXT NOT NULL,
               side TEXT NOT NULL,
@@ -2668,18 +2699,26 @@ sealed class SqliteUsageCache
               estimated_chars INTEGER NOT NULL,
               attribution TEXT NOT NULL,
               FOREIGN KEY(session_file_id) REFERENCES session_files(id) ON DELETE CASCADE,
-              UNIQUE(session_file_id, event_index)
-            );
+              PRIMARY KEY(session_file_id, event_index)
+            ) WITHOUT ROWID;
             """);
 
         ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_session_files_write ON session_files(last_write_utc);");
-        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_token_events_time ON token_events(event_utc);");
-        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_token_events_model_time ON token_events(model, event_utc);");
-        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id, event_index);");
-        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_rate_limit_events_time ON rate_limit_events(event_utc);");
-        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_rate_limit_events_session ON rate_limit_events(session_id, event_index);");
-        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_source_estimate_events_time ON source_estimate_events(event_utc);");
-        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_source_estimate_events_session ON source_estimate_events(session_id, event_index);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_token_events_time ON token_events(event_utc_ms);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_token_events_model_time ON token_events(model, event_utc_ms);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_rate_limit_events_time ON rate_limit_events(event_utc_ms);");
+        ExecuteNonQuery(connection, null, "CREATE INDEX IF NOT EXISTS idx_source_estimate_events_time ON source_estimate_events(event_utc_ms);");
+    }
+
+    static bool HasCacheTables(SqliteConnection connection)
+    {
+        using var command = CreateCommand(connection, null, """
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('session_files', 'token_events', 'rate_limit_events', 'source_estimate_events');
+            """);
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) > 0;
     }
 
     static int? GetSchemaVersion(SqliteConnection connection)
@@ -2706,6 +2745,14 @@ sealed class SqliteUsageCache
         ExecuteNonQuery(connection, null, "DELETE FROM rate_limit_events;");
         ExecuteNonQuery(connection, null, "DELETE FROM token_events;");
         ExecuteNonQuery(connection, null, "DELETE FROM session_files;");
+    }
+
+    static void DropCacheTables(SqliteConnection connection)
+    {
+        ExecuteNonQuery(connection, null, "DROP TABLE IF EXISTS source_estimate_events;");
+        ExecuteNonQuery(connection, null, "DROP TABLE IF EXISTS rate_limit_events;");
+        ExecuteNonQuery(connection, null, "DROP TABLE IF EXISTS token_events;");
+        ExecuteNonQuery(connection, null, "DROP TABLE IF EXISTS session_files;");
     }
 
     static SessionFileState? GetFileState(SqliteConnection connection, SqliteTransaction? transaction, string path)
@@ -2767,29 +2814,29 @@ sealed class SqliteUsageCache
         }
     }
 
-    static void InsertTokenEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, string sessionId, IReadOnlyList<UsageDeltaEvent> events)
+    static void InsertTokenEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, IReadOnlyList<UsageDeltaEvent> events)
     {
         using var command = CreateCommand(connection, transaction, """
             INSERT INTO token_events(
-              session_file_id, session_id, event_index, event_utc, model,
-              total_tokens, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens,
+              session_file_id, event_index, event_utc_ms, model,
+              total_tokens, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
               cumulative_input_tokens
             )
             VALUES(
-              $session_file_id, $session_id, $event_index, $event_utc, $model,
-              $total_tokens, $input_tokens, $cached_input_tokens, $output_tokens, $reasoning_tokens,
+              $session_file_id, $event_index, $event_utc_ms, $model,
+              $total_tokens, $input_tokens, $cached_input_tokens, $cache_write_tokens, $output_tokens, $reasoning_tokens,
               $cumulative_input_tokens
             );
             """);
 
         var sessionFileParam = command.Parameters.Add("$session_file_id", SqliteType.Integer);
-        var sessionParam = command.Parameters.Add("$session_id", SqliteType.Text);
         var indexParam = command.Parameters.Add("$event_index", SqliteType.Integer);
-        var timestampParam = command.Parameters.Add("$event_utc", SqliteType.Text);
+        var timestampParam = command.Parameters.Add("$event_utc_ms", SqliteType.Integer);
         var modelParam = command.Parameters.Add("$model", SqliteType.Text);
         var totalParam = command.Parameters.Add("$total_tokens", SqliteType.Integer);
         var inputParam = command.Parameters.Add("$input_tokens", SqliteType.Integer);
         var cachedInputParam = command.Parameters.Add("$cached_input_tokens", SqliteType.Integer);
+        var cacheWriteParam = command.Parameters.Add("$cache_write_tokens", SqliteType.Integer);
         var outputParam = command.Parameters.Add("$output_tokens", SqliteType.Integer);
         var reasoningParam = command.Parameters.Add("$reasoning_tokens", SqliteType.Integer);
         var cumulativeInputParam = command.Parameters.Add("$cumulative_input_tokens", SqliteType.Integer);
@@ -2797,13 +2844,13 @@ sealed class SqliteUsageCache
         foreach (var usageEvent in events)
         {
             sessionFileParam.Value = sessionFileId;
-            sessionParam.Value = sessionId;
             indexParam.Value = usageEvent.EventIndex;
-            timestampParam.Value = usageEvent.Timestamp.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+            timestampParam.Value = ToUnixTimeMilliseconds(usageEvent.Timestamp);
             modelParam.Value = string.IsNullOrWhiteSpace(usageEvent.Model) ? "unknown" : usageEvent.Model;
             totalParam.Value = usageEvent.Metrics.Total;
             inputParam.Value = usageEvent.Metrics.Input;
             cachedInputParam.Value = usageEvent.Metrics.CachedInput;
+            cacheWriteParam.Value = usageEvent.Metrics.CacheWrite;
             outputParam.Value = usageEvent.Metrics.Output;
             reasoningParam.Value = usageEvent.Metrics.Reasoning;
             cumulativeInputParam.Value = usageEvent.CumulativeInput;
@@ -2811,24 +2858,23 @@ sealed class SqliteUsageCache
         }
     }
 
-    static void InsertRateLimitEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, string sessionId, IReadOnlyList<RateLimitEvent> events)
+    static void InsertRateLimitEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, IReadOnlyList<RateLimitEvent> events)
     {
         using var command = CreateCommand(connection, transaction, """
             INSERT INTO rate_limit_events(
-              session_file_id, session_id, event_index, event_utc, source_timestamp, plan_type,
+              session_file_id, event_index, event_utc_ms, source_timestamp_ms, plan_type,
               window_name, used_percent, remaining_percent, window_minutes, resets_at_local
             )
             VALUES(
-              $session_file_id, $session_id, $event_index, $event_utc, $source_timestamp, $plan_type,
+              $session_file_id, $event_index, $event_utc_ms, $source_timestamp_ms, $plan_type,
               $window_name, $used_percent, $remaining_percent, $window_minutes, $resets_at_local
             );
             """);
 
         var sessionFileParam = command.Parameters.Add("$session_file_id", SqliteType.Integer);
-        var sessionParam = command.Parameters.Add("$session_id", SqliteType.Text);
         var indexParam = command.Parameters.Add("$event_index", SqliteType.Integer);
-        var timestampParam = command.Parameters.Add("$event_utc", SqliteType.Text);
-        var sourceTimestampParam = command.Parameters.Add("$source_timestamp", SqliteType.Text);
+        var timestampParam = command.Parameters.Add("$event_utc_ms", SqliteType.Integer);
+        var sourceTimestampParam = command.Parameters.Add("$source_timestamp_ms", SqliteType.Integer);
         var planTypeParam = command.Parameters.Add("$plan_type", SqliteType.Text);
         var windowParam = command.Parameters.Add("$window_name", SqliteType.Text);
         var usedParam = command.Parameters.Add("$used_percent", SqliteType.Real);
@@ -2839,10 +2885,9 @@ sealed class SqliteUsageCache
         foreach (var rateEvent in events)
         {
             sessionFileParam.Value = sessionFileId;
-            sessionParam.Value = sessionId;
             indexParam.Value = rateEvent.EventIndex;
-            timestampParam.Value = rateEvent.Timestamp.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
-            sourceTimestampParam.Value = rateEvent.EventTimestamp is null ? DBNull.Value : rateEvent.EventTimestamp;
+            timestampParam.Value = ToUnixTimeMilliseconds(rateEvent.Timestamp);
+            sourceTimestampParam.Value = ToDbValue(ParseUtcMilliseconds(rateEvent.EventTimestamp));
             planTypeParam.Value = rateEvent.PlanType is null ? DBNull.Value : rateEvent.PlanType;
             windowParam.Value = string.IsNullOrWhiteSpace(rateEvent.Window) ? "unknown" : rateEvent.Window;
             usedParam.Value = rateEvent.UsedPercent;
@@ -2853,23 +2898,22 @@ sealed class SqliteUsageCache
         }
     }
 
-    static void InsertSourceEstimateEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, string sessionId, IReadOnlyList<SourceEstimateEvent> events)
+    static void InsertSourceEstimateEvents(SqliteConnection connection, SqliteTransaction transaction, long sessionFileId, IReadOnlyList<SourceEstimateEvent> events)
     {
         using var command = CreateCommand(connection, transaction, """
             INSERT INTO source_estimate_events(
-              session_file_id, session_id, event_index, event_utc, model, source, side,
+              session_file_id, event_index, event_utc_ms, model, source, side,
               estimated_tokens, estimated_chars, attribution
             )
             VALUES(
-              $session_file_id, $session_id, $event_index, $event_utc, $model, $source, $side,
+              $session_file_id, $event_index, $event_utc_ms, $model, $source, $side,
               $estimated_tokens, $estimated_chars, $attribution
             );
             """);
 
         var sessionFileParam = command.Parameters.Add("$session_file_id", SqliteType.Integer);
-        var sessionParam = command.Parameters.Add("$session_id", SqliteType.Text);
         var indexParam = command.Parameters.Add("$event_index", SqliteType.Integer);
-        var timestampParam = command.Parameters.Add("$event_utc", SqliteType.Text);
+        var timestampParam = command.Parameters.Add("$event_utc_ms", SqliteType.Integer);
         var modelParam = command.Parameters.Add("$model", SqliteType.Text);
         var sourceParam = command.Parameters.Add("$source", SqliteType.Text);
         var sideParam = command.Parameters.Add("$side", SqliteType.Text);
@@ -2880,9 +2924,8 @@ sealed class SqliteUsageCache
         foreach (var sourceEvent in events)
         {
             sessionFileParam.Value = sessionFileId;
-            sessionParam.Value = sessionId;
             indexParam.Value = sourceEvent.EventIndex;
-            timestampParam.Value = sourceEvent.Timestamp.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+            timestampParam.Value = ToUnixTimeMilliseconds(sourceEvent.Timestamp);
             modelParam.Value = string.IsNullOrWhiteSpace(sourceEvent.Model) ? "unknown" : sourceEvent.Model;
             sourceParam.Value = sourceEvent.Source;
             sideParam.Value = sourceEvent.Side;
@@ -2946,6 +2989,22 @@ sealed class SqliteUsageCache
         DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var dto)
             ? dto.UtcDateTime
             : null;
+
+    static long ToUnixTimeMilliseconds(DateTime value) =>
+        new DateTimeOffset(value.ToUniversalTime()).ToUnixTimeMilliseconds();
+
+    static DateTime FromUnixTimeMilliseconds(long value) =>
+        DateTimeOffset.FromUnixTimeMilliseconds(value).UtcDateTime;
+
+    static long? ParseUtcMilliseconds(string? value) =>
+        DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var dto)
+            ? dto.ToUniversalTime().ToUnixTimeMilliseconds()
+            : null;
+
+    static string FormatIsoUtcMilliseconds(long value) =>
+        FromUnixTimeMilliseconds(value).ToString("o", CultureInfo.InvariantCulture);
+
+    static object ToDbValue(long? value) => value is null ? DBNull.Value : value.Value;
 
     static string? GetNullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
 
@@ -4093,6 +4152,7 @@ sealed class TokenUsageRow
     public long? Total { get; set; }
     public long? Input { get; set; }
     public long? CachedInput { get; set; }
+    public long? CacheWrite { get; set; }
     public double? CacheHitRatioPercent { get; set; }
     public long? Output { get; set; }
     public long? Reasoning { get; set; }
@@ -4121,6 +4181,7 @@ sealed class TokenBucket : ICostRow
     public long Total { get; set; }
     public long Input { get; set; }
     public long CachedInput { get; set; }
+    public long CacheWrite { get; set; }
     public long Output { get; set; }
     public long Reasoning { get; set; }
     public int Events { get; set; }
@@ -4147,6 +4208,7 @@ sealed class TurnTokenRow : ICostRow
     public long Total { get; set; }
     public long Input { get; set; }
     public long CachedInput { get; set; }
+    public long CacheWrite { get; set; }
     public double? CacheHitRatioPercent { get; set; }
     public long NonCachedInput { get; set; }
     public long Output { get; set; }
@@ -4168,6 +4230,7 @@ sealed class NoCompactionTurnTokenRow : ICostRow
     public long Total { get; set; }
     public long Input { get; set; }
     public long CachedInput { get; set; }
+    public long CacheWrite { get; set; }
     public double? CacheHitRatioPercent { get; set; }
     public long NonCachedInput { get; set; }
     public long Output { get; set; }
@@ -4260,12 +4323,12 @@ sealed class SourceCostRow : ICostRow
     public string? Attribution { get; set; }
 }
 
-record UsageMetrics(long Total, long Input, long CachedInput, long Output, long Reasoning);
+record UsageMetrics(long Total, long Input, long CachedInput, long CacheWrite, long Output, long Reasoning);
 record UsageDeltaEvent(DateTime Timestamp, string Model, UsageMetrics Metrics, int EventIndex = 0, long CumulativeInput = 0);
 record RateLimitEvent(DateTime Timestamp, string? EventTimestamp, string? PlanType, string? Window, double UsedPercent, double RemainingPercent, double? WindowMinutes, string? ResetsAt, int EventIndex = 0);
 record SourceEstimateEvent(DateTime Timestamp, string Model, string Source, string Side, long Tokens, long Chars, string Attribution, int EventIndex = 0);
 record UsageParseResult(List<UsageDeltaEvent> Events, List<RateLimitEvent> RateLimitEvents, List<SourceEstimateEvent> SourceEstimateEvents, int LineCount, DateTime? LastEventUtc);
-record PricingRecord(string Basis, string Unit, string Mode, string Model, string ContextBand, double InputPerMillion, double CachedInputPerMillion, double OutputPerMillion);
+record PricingRecord(string Basis, string Unit, string Mode, string Model, string ContextBand, double InputPerMillion, double CachedInputPerMillion, double OutputPerMillion, double CacheWritePerMillion = 0);
 record PeriodWindow(string Group, string Name, string Label, DateTime StartUtc, DateTime EndUtc, int SortOrder, int RefreshSeconds);
 record SourceEstimate(string Source, string Side, long Tokens, long Chars, string Attribution);
 record ConversationCostTotals(double TotalCostUsd, double TotalCostCredits);

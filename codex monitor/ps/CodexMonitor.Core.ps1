@@ -123,6 +123,7 @@ function Convert-TokenUsage {
         Total = Get-PropValue $Usage @("total_tokens", "totalTokens")
         Input = $inputValue
         CachedInput = $cachedInputValue
+        CacheWrite = Get-PropValue $Usage @("cache_write_tokens", "cacheWriteTokens", "cache_creation_input_tokens", "cacheCreationInputTokens")
         CacheHitRatioPercent = Get-CacheHitRatioPercent -InputTokens $inputTokens -CachedInputTokens $cachedInputTokens
         Output = Get-PropValue $Usage @("output_tokens", "outputTokens")
         Reasoning = Get-PropValue $Usage @("reasoning_output_tokens", "reasoningOutputTokens")
@@ -173,6 +174,7 @@ function Convert-UsageToMetrics {
         Total = Get-UsageMetric $Usage @("total_tokens", "totalTokens")
         Input = Get-UsageMetric $Usage @("input_tokens", "inputTokens")
         CachedInput = Get-UsageMetric $Usage @("cached_input_tokens", "cachedInputTokens")
+        CacheWrite = Get-UsageMetric $Usage @("cache_write_tokens", "cacheWriteTokens", "cache_creation_input_tokens", "cacheCreationInputTokens")
         Output = Get-UsageMetric $Usage @("output_tokens", "outputTokens")
         Reasoning = Get-UsageMetric $Usage @("reasoning_output_tokens", "reasoningOutputTokens")
     }
@@ -196,6 +198,7 @@ function New-TokenBucket {
         Total = 0L
         Input = 0L
         CachedInput = 0L
+        CacheWrite = 0L
         Output = 0L
         Reasoning = 0L
         Events = 0
@@ -218,6 +221,7 @@ function Add-TokenMetrics {
     $Bucket.Total += [long]$Metrics.Total
     $Bucket.Input += [long]$Metrics.Input
     $Bucket.CachedInput += [long]$Metrics.CachedInput
+    $Bucket.CacheWrite += [long]$Metrics.CacheWrite
     $Bucket.Output += [long]$Metrics.Output
     $Bucket.Reasoning += [long]$Metrics.Reasoning
     $Bucket.Events += 1
@@ -236,14 +240,15 @@ function Get-PositiveDeltaMetrics {
     $total = [long]$Current.Total - [long]$Previous.Total
     $input = [long]$Current.Input - [long]$Previous.Input
     $cachedInput = [long]$Current.CachedInput - [long]$Previous.CachedInput
+    $cacheWrite = [long]$Current.CacheWrite - [long]$Previous.CacheWrite
     $output = [long]$Current.Output - [long]$Previous.Output
     $reasoning = [long]$Current.Reasoning - [long]$Previous.Reasoning
 
-    if ($total -lt 0 -or $input -lt 0 -or $cachedInput -lt 0 -or $output -lt 0 -or $reasoning -lt 0) {
+    if ($total -lt 0 -or $input -lt 0 -or $cachedInput -lt 0 -or $cacheWrite -lt 0 -or $output -lt 0 -or $reasoning -lt 0) {
         return $null
     }
 
-    if ($total -eq 0 -and $input -eq 0 -and $cachedInput -eq 0 -and $output -eq 0 -and $reasoning -eq 0) {
+    if ($total -eq 0 -and $input -eq 0 -and $cachedInput -eq 0 -and $cacheWrite -eq 0 -and $output -eq 0 -and $reasoning -eq 0) {
         return $null
     }
 
@@ -251,6 +256,7 @@ function Get-PositiveDeltaMetrics {
         Total = $total
         Input = $input
         CachedInput = $cachedInput
+        CacheWrite = $cacheWrite
         Output = $output
         Reasoning = $reasoning
     }
@@ -269,6 +275,7 @@ function Test-SameMetrics {
     return [long]$Left.Total -eq [long]$Right.Total `
         -and [long]$Left.Input -eq [long]$Right.Input `
         -and [long]$Left.CachedInput -eq [long]$Right.CachedInput `
+        -and [long]$Left.CacheWrite -eq [long]$Right.CacheWrite `
         -and [long]$Left.Output -eq [long]$Right.Output `
         -and [long]$Left.Reasoning -eq [long]$Right.Reasoning
 }
@@ -283,6 +290,7 @@ function Test-AnyMetrics {
     return [long]$Metrics.Total -ne 0 `
         -or [long]$Metrics.Input -ne 0 `
         -or [long]$Metrics.CachedInput -ne 0 `
+        -or [long]$Metrics.CacheWrite -ne 0 `
         -or [long]$Metrics.Output -ne 0 `
         -or [long]$Metrics.Reasoning -ne 0
 }
@@ -294,10 +302,11 @@ function Get-MetricsKey {
         return "null"
     }
 
-    return "{0}/{1}/{2}/{3}/{4}" -f `
+    return "{0}/{1}/{2}/{3}/{4}/{5}" -f `
         [long]$Metrics.Total,
         [long]$Metrics.Input,
         [long]$Metrics.CachedInput,
+        [long]$Metrics.CacheWrite,
         [long]$Metrics.Output,
         [long]$Metrics.Reasoning
 }

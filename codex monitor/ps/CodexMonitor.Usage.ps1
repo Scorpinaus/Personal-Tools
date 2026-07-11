@@ -787,6 +787,7 @@ function Get-ConversationTurnTokenRows {
                 Total = $metrics.Total
                 Input = $metrics.Input
                 CachedInput = $metrics.CachedInput
+                CacheWrite = $metrics.CacheWrite
                 CacheHitRatioPercent = Get-CacheHitRatioPercent -InputTokens ([long]$metrics.Input) -CachedInputTokens ([long]$metrics.CachedInput)
                 NonCachedInput = [Math]::Max(0L, [long]$metrics.Input - [long]$metrics.CachedInput)
                 Output = $metrics.Output
@@ -816,6 +817,7 @@ function Get-NoCompactionTurnTokenRows {
                 $costValue =
                     ([long]$row.NonCachedInput * [double]$pricing.InputPerMillion / 1000000.0) +
                     ([long]$row.CachedInput * [double]$pricing.CachedInputPerMillion / 1000000.0) +
+                    ([long]$row.CacheWrite * [double]$pricing.CacheWritePerMillion / 1000000.0) +
                     ([long]$row.Output * [double]$pricing.OutputPerMillion / 1000000.0)
                 $cost = [Math]::Round($costValue, 4)
                 $costUsd = $cost
@@ -832,6 +834,7 @@ function Get-NoCompactionTurnTokenRows {
                 Total = $row.Total
                 Input = $row.Input
                 CachedInput = $row.CachedInput
+                CacheWrite = $row.CacheWrite
                 CacheHitRatioPercent = Get-CacheHitRatioPercent -InputTokens ([long]$row.Input) -CachedInputTokens ([long]$row.CachedInput)
                 NonCachedInput = $row.NonCachedInput
                 Output = $row.Output
