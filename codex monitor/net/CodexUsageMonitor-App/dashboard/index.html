@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Codex Usage Monitor</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <div class="brand">
+        <h1>Codex Usage Monitor</h1>
+        <nav class="top-nav" aria-label="Dashboard views">
+          <a class="nav-link active" href="/index.html">Overview</a>
+          <a class="nav-link" href="/daily.html">Daily Usage</a>
+        </nav>
+      </div>
+      <div class="status">
+        <span class="pill pill-live" id="monitorState">Running</span>
+        <span class="pill pill-time" id="updated">Updated: loading</span>
+        <span class="pill" id="plan">Plan: unknown</span>
+        <span class="pill" id="refresh">Refresh: 30s</span>
+        <button class="stop-button" id="stopMonitor" type="button">Stop</button>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div id="error" class="error"></div>
+    <section class="overview-workspace" aria-label="Overview sections">
+      <div class="overview-tabs" role="tablist" aria-label="Overview sections">
+        <button class="overview-tab active" id="overviewTabSummary" type="button" role="tab" aria-selected="true" aria-controls="overviewSummary" data-overview-tab="overviewSummary">Summary</button>
+        <button class="overview-tab" id="overviewTabRateHistory" type="button" role="tab" aria-selected="false" aria-controls="overviewRateHistory" data-overview-tab="overviewRateHistory">Rate-Limit History</button>
+        <button class="overview-tab" id="overviewTabModelCosts" type="button" role="tab" aria-selected="false" aria-controls="overviewModelCosts" data-overview-tab="overviewModelCosts">Token Cost</button>
+        <button class="overview-tab" id="overviewTabConversation" type="button" role="tab" aria-selected="false" aria-controls="overviewConversation" data-overview-tab="overviewConversation">Conversation Usage</button>
+      </div>
+      <div class="overview-panel active" id="overviewSummary" role="tabpanel" aria-labelledby="overviewTabSummary">
+        <div class="grid">
+          <section class="priority-section">
+            <h2>Rate Limits</h2>
+            <div id="rateLimits"></div>
+          </section>
+          <section class="priority-section">
+            <h2>Rolling Token Usage</h2>
+            <div id="rollingTokens"></div>
+          </section>
+        </div>
+      </div>
+      <div class="overview-panel" id="overviewRateHistory" role="tabpanel" aria-labelledby="overviewTabRateHistory" hidden>
+        <div class="section-body">
+          <h2>Rate-Limit History</h2>
+          <div id="rateLimitHistory"></div>
+        </div>
+      </div>
+      <div class="overview-panel" id="overviewModelCosts" role="tabpanel" aria-labelledby="overviewTabModelCosts" hidden>
+        <div class="section-body">
+          <h2>Estimated Token Cost By Model</h2>
+          <p class="source" id="costAssumptions">Cost basis: loading</p>
+          <div class="tabs" role="tablist">
+            <button class="tab active" type="button" data-tab-scope="costs" data-tab="modelCosts">By model</button>
+            <button class="tab" type="button" data-tab-scope="costs" data-tab="noCompactionCosts">API no-compaction</button>
+            <button class="tab" type="button" data-tab-scope="costs" data-tab="sourceCosts">By source estimate</button>
+          </div>
+          <div id="modelCosts" class="tab-panel" data-tab-scope="costs"></div>
+          <div id="noCompactionCosts" class="tab-panel" data-tab-scope="costs" hidden></div>
+          <div id="sourceCosts" class="tab-panel" data-tab-scope="costs" hidden></div>
+          <p class="source">
+            Pricing source is shown above for the selected cost basis. Reasoning tokens are shown separately and not double-counted.
+            Source costs are local estimates allocated from the model/period totals.
+          </p>
+        </div>
+      </div>
+      <div class="overview-panel" id="overviewConversation" role="tabpanel" aria-labelledby="overviewTabConversation" hidden>
+        <div class="section-body">
+          <h2>Conversation Token Usage</h2>
+          <div class="tabs" role="tablist">
+            <button class="tab active" type="button" data-tab-scope="conversation" data-tab="conversationOverview">Overview</button>
+            <button class="tab tab-disabled" type="button" id="conversationAnalysisTab" data-tab-scope="conversation" data-tab="conversationAnalysis" disabled>Conversation Analysis</button>
+          </div>
+          <div id="conversationOverview" class="tab-panel" data-tab-scope="conversation"></div>
+          <div id="conversationAnalysis" class="tab-panel" data-tab-scope="conversation" hidden>
+            <div id="conversationTokens"></div>
+            <p class="source" id="source"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

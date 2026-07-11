@@ -713,7 +713,7 @@ sealed class UsageMonitor
     ConversationMatches GetLatestConversationUsageMatches(IReadOnlyList<FileInfo> files, int tail, DateTime sinceUtc)
     {
         ConversationUsageMatch? latestUsage = null;
-        ConversationUsageMatch? latestRateLimit = null;
+        var rateLimitMatches = new List<ConversationUsageMatch>();
         foreach (var file in files)
         {
             var lines = ReadSessionLines(file.FullName, tail);
@@ -764,17 +764,52 @@ sealed class UsageMonitor
                     latestUsage = match;
                 }
 
-                if (rateLimits is not null && (latestRateLimit is null || CompareNullableTime(match.Timestamp, latestRateLimit.Timestamp) >= 0))
+                if (rateLimits is not null)
                 {
-                    latestRateLimit = match;
+                    rateLimitMatches.Add(match);
                 }
             }
         }
 
-        return new ConversationMatches(latestUsage, latestRateLimit);
+        return new ConversationMatches(latestUsage, SelectCurrentRateLimitMatch(rateLimitMatches));
     }
 
     static int CompareNullableTime(DateTime? left, DateTime? right) => (left ?? DateTime.MinValue).CompareTo(right ?? DateTime.MinValue);
+
+    ConversationUsageMatch? SelectCurrentRateLimitMatch(List<ConversationUsageMatch> matches)
+    {
+        var ordered = matches
+            .OrderByDescending(match => match.Timestamp ?? DateTime.MinValue)
+            .ToList();
+        var latest = ordered.FirstOrDefault();
+        if (latest is null)
+        {
+            return null;
+        }
+
+        var latestRows = ConvertRateLimits(latest.RateLimits);
+        if (latestRows.Count == 0 || latestRows.Any(row => row.UsedPercent > 0))
+        {
+            return latest;
+        }
+
+        // Codex can emit a temporary all-zero quota sample with different reset
+        // times between real samples. Prefer a recent positive sample whose quota
+        // window has not expired, while still allowing a genuine reset to zero.
+        var latestTime = latest.Timestamp ?? DateTime.MinValue;
+        return ordered.Skip(1).FirstOrDefault(match =>
+        {
+            var matchTime = match.Timestamp ?? DateTime.MinValue;
+            if (latestTime - matchTime > TimeSpan.FromMinutes(10))
+            {
+                return false;
+            }
+
+            return ConvertRateLimits(match.RateLimits).Any(row =>
+                row.UsedPercent > 0 &&
+                (row.ResetsAt is null || row.ResetsAt > DateTime.Now));
+        }) ?? latest;
+    }
 
     List<UsageDeltaEvent> GetSessionUsageDeltas(string path)
     {

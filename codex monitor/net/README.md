@@ -1,6 +1,6 @@
 # Codex Usage Monitor (.NET)
 
-This folder contains the C#/.NET 8 Windows conversion of the original PowerShell Codex usage monitor.
+This folder contains the C#/.NET 10 Windows conversion of the original PowerShell Codex usage monitor.
 
 ## Run
 
@@ -10,19 +10,21 @@ dotnet run -- -NoOpen -DashboardPort 8787
 
 Normal launch starts the dashboard and the floating Windows desktop limits widget. Double-clicking the published exe starts both without opening a console window. Use `-NoWidget` to suppress the widget, or `-Widget` to run only the widget.
 
-## Publish Compact Exe
+## Publish Compact App
 
 ```powershell
 dotnet publish -c Release
 ```
 
-The published Windows x64 framework-dependent executable is written to:
+The published Windows x64 framework-dependent application is written to:
 
 ```text
-bin\Release\net8.0-windows\win-x64\publish\codex-usage-monitor.exe
+bin\Release\net10.0-windows\win-x64\publish\codex-usage-monitor.exe
 ```
 
-This default publish is small, but requires the .NET 8 Windows Desktop Runtime on the machine that runs it. To publish a portable self-contained executable instead:
+Double-click `codex-usage-monitor.exe` to start the dashboard and widget. Keep the other published files and the `dashboard` folder beside the executable: the patched native SQLite library is intentionally not bundled into the executable because single-file packaging can hang during startup.
+
+This default publish is small, but requires the .NET 10 Windows Desktop Runtime on the machine that runs it. To publish a portable self-contained application instead:
 
 ```powershell
 dotnet publish -c Release --self-contained true -p:SelfContained=true -p:EnableCompressionInSingleFile=true
