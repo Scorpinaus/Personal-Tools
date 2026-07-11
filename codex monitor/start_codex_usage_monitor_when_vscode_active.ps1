@@ -1,7 +1,6 @@
 param(
-    [string]$MonitorScript = (Join-Path $PSScriptRoot "codex_usage_monitor.ps1"),
-    [int]$CheckSeconds = 5,
-    [int]$RefreshSeconds = 3
+    [string]$MonitorExecutable = (Join-Path $PSScriptRoot "net\bin\Release\net10.0-windows\win-x64\publish\codex-usage-monitor.exe"),
+    [int]$CheckSeconds = 5
 )
 
 Set-StrictMode -Version Latest
@@ -47,19 +46,11 @@ function Test-VSCodeForeground {
 }
 
 function Start-MonitorWindow {
-    if (-not (Test-Path -LiteralPath $MonitorScript)) {
-        throw "Monitor script not found: $MonitorScript"
+    if (-not (Test-Path -LiteralPath $MonitorExecutable)) {
+        throw "Published monitor not found: $MonitorExecutable. Run publish-monitor.ps1 first."
     }
 
-    $argumentList = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-NoExit",
-        "-File", "`"$MonitorScript`"",
-        "-RefreshSeconds", "$RefreshSeconds"
-    )
-
-    Start-Process -FilePath "powershell.exe" -ArgumentList $argumentList -WindowStyle Normal
+    Start-Process -FilePath $MonitorExecutable
 }
 
 $started = $false
@@ -70,8 +61,8 @@ while ($true) {
     }
 
     if ($started) {
-        $running = Get-CimInstance Win32_Process -Filter "name = 'powershell.exe'" |
-            Where-Object { $_.CommandLine -like "*codex_usage_monitor.ps1*" }
+        $running = Get-Process codex-usage-monitor -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and $_.Path.Equals($MonitorExecutable, [StringComparison]::OrdinalIgnoreCase) }
         if ($null -eq $running) {
             $started = $false
         }

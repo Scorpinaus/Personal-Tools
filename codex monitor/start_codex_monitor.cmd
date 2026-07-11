@@ -1,11 +1,12 @@
 @echo off
-set "SCRIPT=%~dp0codex_usage_monitor.ps1"
+set "EXE=%~dp0net\bin\Release\net10.0-windows\win-x64\publish\codex-usage-monitor.exe"
 
-if not exist "%SCRIPT%" (
-  echo Codex usage monitor script not found:
-  echo %SCRIPT%
+if not exist "%EXE%" (
+  echo Published Codex usage monitor not found:
+  echo %EXE%
+  echo Run publish-monitor.ps1 first.
   pause
   exit /b 1
 )
 
-start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%"
+start "" "%EXE%"

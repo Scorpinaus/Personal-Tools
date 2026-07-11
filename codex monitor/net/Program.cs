@@ -2380,6 +2380,8 @@ sealed class SqliteUsageCache
             {
                 ClearData(connection);
             }
+
+            CheckpointWal(connection);
         }
     }
 
@@ -2397,6 +2399,7 @@ sealed class SqliteUsageCache
             using var connection = OpenConnection();
             ExecuteNonQuery(connection, null, "PRAGMA foreign_keys=ON;");
             using var transaction = connection.BeginTransaction();
+            var changed = false;
 
             foreach (var file in files)
             {
@@ -2430,6 +2433,7 @@ sealed class SqliteUsageCache
                     InsertRateLimitEvents(connection, transaction, sessionFileId, parsed.RateLimitEvents);
                     InsertSourceEstimateEvents(connection, transaction, sessionFileId, parsed.SourceEstimateEvents);
                     UpdateIndexedFile(connection, transaction, sessionFileId, size, lastWriteUtc, parsed.LineCount, parsed.LastEventUtc);
+                    changed = true;
                 }
                 catch (Exception ex)
                 {
@@ -2438,6 +2442,10 @@ sealed class SqliteUsageCache
             }
 
             transaction.Commit();
+            if (changed)
+            {
+                CheckpointWal(connection);
+            }
         }
     }
 
@@ -2655,6 +2663,11 @@ sealed class SqliteUsageCache
         var connection = new SqliteConnection(builder.ToString());
         connection.Open();
         return connection;
+    }
+
+    static void CheckpointWal(SqliteConnection connection)
+    {
+        ExecuteNonQuery(connection, null, "PRAGMA wal_checkpoint(TRUNCATE);");
     }
 
     static void EnsureSchemaMeta(SqliteConnection connection)

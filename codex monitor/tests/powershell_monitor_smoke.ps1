@@ -181,7 +181,7 @@ function Quote-ProcessArgument {
 
 $monitorScript = Join-Path $RepoRoot "codex_usage_monitor.ps1"
 $dashboardScript = Join-Path $RepoRoot "codex_usage_dashboard.ps1"
-$tempRoot = Join-Path $RepoRoot ".test-tmp\powershell-monitor-smoke"
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("CodexUsageMonitorTests\" + [guid]::NewGuid().ToString("N"))
 
 if (Test-Path -LiteralPath $tempRoot) {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force

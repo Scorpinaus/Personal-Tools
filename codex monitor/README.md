@@ -2,10 +2,10 @@
 
 Codex Usage Monitor is a local Windows dashboard, desktop widget, and console monitor for Codex session usage. It reads Codex JSONL session files, summarizes rate-limit and token activity, serves a browser dashboard from `127.0.0.1`, and can show a floating desktop widget for the live 5-hour and 1-week limits.
 
-The project currently has two implementations:
+The project has a primary .NET implementation and a retained PowerShell fallback:
 
-- `codex_usage_monitor.ps1`: the PowerShell monitor entry point, backed by dot-sourced modules in `ps/`.
-- `net/`: a .NET 8 port with SQLite-backed indexing and a compact Windows publish target.
+- `net/`: the primary .NET 10 implementation with SQLite-backed indexing and a compact Windows publish target.
+- `codex_usage_monitor.ps1`: the legacy PowerShell fallback, backed by dot-sourced modules in `ps/`.
 
 ## What It Shows
 
@@ -24,9 +24,9 @@ Cost values are local estimates. They are useful for trend analysis, but they sh
 - Windows.
 - PowerShell for the script implementation.
 - Codex session data under `%USERPROFILE%\.codex`, or another folder passed with `-CodexHome`.
-- Optional: .NET 8 SDK if you want to run or publish the C# version.
+- .NET 10 Windows Desktop Runtime to run the published application, or the .NET 10 SDK to build it.
 
-The default published .NET executable is framework-dependent for Windows x64. It is much smaller, but requires the .NET 8 Windows Desktop Runtime on the machine that runs it.
+The default published .NET application is framework-dependent for Windows x64. It is much smaller, but requires the .NET 10 Windows Desktop Runtime on the machine that runs it.
 
 ## Quick Start
 
@@ -44,7 +44,7 @@ http://127.0.0.1:8787/
 
 Normal monitor launch also starts a small always-on-top Windows desktop widget showing the live `5 hour` and `1 week` rate-limit percentages. If port `8787` is busy, the monitor tries the next available local port. The dashboard opens automatically unless `-NoOpen` is passed.
 
-To stop the PowerShell monitor:
+To stop the monitor:
 
 ```bat
 stop_codex_monitor.cmd
@@ -133,17 +133,18 @@ dotnet run -- -NoOpen -DashboardPort 8787
 Run the published Windows executable:
 
 ```powershell
-.\net\bin\Release\net8.0-windows\win-x64\publish\codex-usage-monitor.exe
+.\net\bin\Release\net10.0-windows\win-x64\publish\codex-usage-monitor.exe
 ```
 
-Publish a fresh compact executable:
+Publish a fresh compact application using the protected publish workflow:
 
 ```powershell
-cd .\net
-dotnet publish -c Release
+.\publish-monitor.ps1
 ```
 
-Publish a portable self-contained executable when you need to run on a machine without the .NET 8 Windows Desktop Runtime:
+Direct `dotnet publish` commands are intended for development only. The protected script builds in the Windows temporary directory, validates required files, replaces the production package only after a successful build, and removes intermediates automatically.
+
+Publish a portable self-contained application manually when you need to run on a machine without the .NET 10 Windows Desktop Runtime:
 
 ```powershell
 cd .\net
@@ -153,7 +154,7 @@ dotnet publish -c Release --self-contained true -p:SelfContained=true -p:EnableC
 The publish output must keep the executable and dashboard assets together:
 
 ```text
-net\bin\Release\net8.0-windows\win-x64\publish\
+net\bin\Release\net10.0-windows\win-x64\publish\
   codex-usage-monitor.exe
   dashboard\
     index.html
@@ -172,6 +173,29 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\powershell_monit
 ```
 
 The suite creates temporary synthetic Codex session data and verifies library snapshot generation, `-Once -Console`, dashboard `/api/usage`, and `/api/shutdown`.
+
+## Build and Disk Maintenance
+
+Preview removable generated artifacts without changing files:
+
+```powershell
+.\clean-monitor.ps1 -WhatIf
+```
+
+Remove known test, diagnostic, intermediate, Debug, and stale framework outputs while protecting the production publish and live SQLite cache:
+
+```powershell
+.\clean-monitor.ps1
+```
+
+Cache deletion and production-package deletion are opt-in and require the monitor to be closed:
+
+```powershell
+.\clean-monitor.ps1 -IncludeCache
+.\clean-monitor.ps1 -IncludePublish
+```
+
+Tests use a unique folder under the Windows temporary directory and remove it in a `finally` block. The .NET cache checkpoints its WAL after indexing changes to prevent journal growth.
 
 ## Common Options
 
@@ -252,8 +276,8 @@ The SQLite database and rate-limit samples are derived from Codex session data. 
 - Each PowerShell snapshot resets and reuses an in-memory session-file listing cache, avoiding repeated recursive session-tree walks inside one dashboard/API refresh.
 - The .NET app serves and publishes assets from `net/dashboard/`.
 - Keep both dashboard folders in sync when changing the UI.
-- `net/CodexUsageMonitor.csproj` targets `net8.0-windows`, publishes a Windows x64, framework-dependent, single-file executable by default, and copies `net/dashboard/**` beside it.
-- The repository intentionally commits the published Windows executable and dashboard publish assets under `net/bin/Release/net8.0-windows/win-x64/publish/`.
+- `net/CodexUsageMonitor.csproj` targets `net10.0-windows` and publishes a Windows x64, framework-dependent application. Native SQLite remains beside the executable because single-file packaging can hang during startup.
+- Build and publish outputs are local artifacts and are not committed to Git.
 - Local SQLite cache files are ignored by git.
 
 ## Project Layout
@@ -268,16 +292,16 @@ start_codex_monitor.cmd                         Visible PowerShell launcher
 start_codex_monitor.vbs                         Hidden-window launcher
 start_codex_widget.cmd                          Visible widget-only launcher
 start_codex_widget.vbs                          Hidden widget-only launcher
-stop_codex_monitor.cmd                          Stop helper for PowerShell monitor/port 8787
+stop_codex_monitor.cmd                          Stop helper for .NET and legacy PowerShell monitors
 start_codex_usage_monitor_when_vscode_active.ps1
                                                  Starts monitor when VS Code is foreground
 dashboard/                                      Static assets for PowerShell dashboard
-net/                                            .NET 8 implementation
+net/                                            .NET 10 implementation
 net/README.md                                   .NET-specific notes
 net/Program.cs                                  .NET monitor, parser, cache, and server
 net/CodexUsageMonitor.csproj                    .NET publish configuration
 net/dashboard/                                  Static assets for .NET dashboard
-net/bin/Release/net8.0-windows/win-x64/publish/ Committed Windows publish output
+net/bin/Release/net10.0-windows/win-x64/publish/ Local Windows publish output
 ```
 
 ## Troubleshooting
@@ -291,7 +315,7 @@ If dashboard assets are missing in the .NET publish output, run `dotnet publish 
 If data looks stale in the .NET monitor, retry with:
 
 ```powershell
-.\net\bin\Release\net8.0-windows\win-x64\publish\codex-usage-monitor.exe -RebuildCache
+.\net\bin\Release\net10.0-windows\win-x64\publish\codex-usage-monitor.exe -RebuildCache
 ```
 
 If PowerShell blocks script execution, launch with:

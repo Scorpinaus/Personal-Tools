@@ -12,8 +12,10 @@ Normal launch starts the dashboard and the floating Windows desktop limits widge
 
 ## Publish Compact App
 
+From the repository root, use the protected publisher:
+
 ```powershell
-dotnet publish -c Release
+.\publish-monitor.ps1
 ```
 
 The published Windows x64 framework-dependent application is written to:
@@ -24,7 +26,7 @@ bin\Release\net10.0-windows\win-x64\publish\codex-usage-monitor.exe
 
 Double-click `codex-usage-monitor.exe` to start the dashboard and widget. Keep the other published files and the `dashboard` folder beside the executable: the patched native SQLite library is intentionally not bundled into the executable because single-file packaging can hang during startup.
 
-This default publish is small, but requires the .NET 10 Windows Desktop Runtime on the machine that runs it. To publish a portable self-contained application instead:
+This default publish is small, but requires the .NET 10 Windows Desktop Runtime on the machine that runs it. The publisher uses temporary intermediate directories and cleans them automatically. To publish a portable self-contained application instead:
 
 ```powershell
 dotnet publish -c Release --self-contained true -p:SelfContained=true -p:EnableCompressionInSingleFile=true
